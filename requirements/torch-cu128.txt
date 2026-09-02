@@ -1,0 +1,4 @@
+# Install this file from the official PyTorch CUDA index before installing the project.
+torch==2.7.1
+torchvision==0.22.1
+

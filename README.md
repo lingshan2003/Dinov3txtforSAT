@@ -1,0 +1,120 @@
+# DINOtxt for Remote Sensing
+
+本仓库是“面向遥感视觉理解的 DINOv3 领域文本对齐”毕业研究的首版工程骨架。当前实现聚焦可验证的 Minimum Viable Thesis：加载 Meta 官方 DINOv3/dino.txt，冻结视觉 backbone，训练视觉 alignment head、文本投影层与文本编码器最后 K 层，使用遥感 image-text pair 做对称 InfoNCE 对齐。
+
+本项目不复刻官方 32 卡训练方案，也不从头预训练 DINOv3。首个目标是单张 RTX 4090 上跑通 ChatEarthNet 10k 子集，并建立 Web/SAT backbone 的受控比较。
+
+## 今晚在 AutoDL 上完成什么
+
+建议把项目放在数据盘（例如 `/root/autodl-tmp/Dinov3txtforSAT`），不要把 13 GB 数据和约数 GB 权重放在系统盘。
+
+```bash
+cd /root/autodl-tmp/Dinov3txtforSAT
+bash scripts/bootstrap_autodl.sh
+source .venv/bin/activate
+```
+
+脚本使用 Python 3.12 `venv`，默认安装 PyTorch 2.7.1 + CUDA 12.8 wheel，并把 DINOv3 固定在提交 `6876159a11b4df116f30f667f8c9888617df0751`。如果实例驱动不支持 CUDA 12.8，先运行 `nvidia-smi`，再将 `PYTORCH_INDEX_URL` 改成匹配的官方 CUDA wheel 索引；不要混装不同 CUDA 后缀的 torch/torchvision。
+
+下载权重、ChatEarthNet 元数据与 RGB 图像：
+
+```bash
+bash scripts/download_assets.sh all 2>&1 | tee download.log
+```
+
+可以开三个终端并行下载：
+
+```bash
+bash scripts/download_assets.sh weights
+bash scripts/download_assets.sh data-metadata
+bash scripts/download_assets.sh data-rgb
+```
+
+远程 SSH 可能断开时，建议放进 `tmux`，而不是只用普通前台终端：
+
+```bash
+tmux new -s dinotxt-download
+bash scripts/download_assets.sh all 2>&1 | tee download.log
+# 按 Ctrl-b，再按 d 可退出 tmux；之后用 tmux attach -t dinotxt-download 恢复查看。
+```
+
+脚本支持断点续传，并验证官方 checkpoint 的 SHA-256 文件名前缀以及 ChatEarthNet 的 MD5。若官方站点在服务器不可达，通过环境变量逐项替换 URL，不要修改脚本并提交临时镜像地址：
+
+```bash
+DINOV3_SAT_URL='你的可信镜像或 Meta 签名 URL' bash scripts/download_assets.sh weights
+ZENODO_RECORD_BASE='你的 Zenodo 镜像记录目录' bash scripts/download_assets.sh data-rgb
+```
+
+下载完成后的关键文件应为：
+
+```text
+assets/checkpoints/
+├── bpe_simple_vocab_16e6.txt.gz
+├── dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth
+├── dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth
+└── dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth
+assets/data/raw/chatearthnet/
+├── json_files.zip
+└── s2_rgb_images.zip
+```
+
+只下载不解压是今晚最低验收标准。磁盘充足时再解压：
+
+```bash
+mkdir -p assets/data/raw/chatearthnet/extracted
+unzip -q assets/data/raw/chatearthnet/json_files.zip -d assets/data/raw/chatearthnet/extracted
+unzip -q assets/data/raw/chatearthnet/s2_rgb_images.zip -d assets/data/raw/chatearthnet/extracted
+find assets/data/raw/chatearthnet/extracted -type f | head
+```
+
+不要假定压缩包解压后的目录名。先用 `find` 找到实际 PNG 目录，再生成 manifest：
+
+```bash
+python tools/prepare_chatearthnet.py \
+  --annotations assets/data/raw/chatearthnet/extracted/json_files/ChatEarthNet_caps_35_train.json \
+  --images-root assets/data/raw/chatearthnet/extracted/s2_rgb_images \
+  --split train \
+  --limit 10000 \
+  --seed 11 \
+  --output assets/data/manifests/chatearthnet_train_10k.jsonl
+```
+
+验证模型权重、维度和冻结策略：
+
+```bash
+dinotxt-rs-smoke --config configs/train_mvp_web.toml
+dinotxt-rs-smoke --config configs/train_mvp_sat.toml
+```
+
+正式训练前，先把配置中的 manifest 路径确认无误，然后：
+
+```bash
+dinotxt-rs-train --config configs/train_mvp_web.toml
+```
+
+训练启动时会计算当前 backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将 GPU/CUDA、Python、PyTorch 与 DINOv3 commit 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
+
+## 当前代码结构
+
+```text
+configs/                     # 每次实验的不可变 TOML 配置
+docs/                        # 架构规则与研究协议
+scripts/                     # 环境和大文件下载入口
+tools/                       # 一次性数据转换工具
+src/dinotxt_rs/
+├── cli/                     # 用户入口，不承载核心算法
+├── data/                    # canonical manifest 与 transform
+├── losses/                  # InfoNCE 与可选 negative queue
+├── models/                  # 官方模型加载和显式冻结策略
+└── training/                # 单卡训练、日志、轻量 checkpoint
+```
+
+详细的开发边界、数据契约、实验可复现规则与合并门槛见 [docs/DEVELOPMENT_ARCHITECTURE.md](docs/DEVELOPMENT_ARCHITECTURE.md)。研究动机与完整实验规划见 [DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md](DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md)。
+
+## 已知边界
+
+- 这是单卡 MVP，不是官方 FSDP 训练代码的缩小复刻。
+- `gradient_accumulation` 只扩大优化器的有效 batch，不会让每个 InfoNCE softmax 看到更多当前批次负样本；`queue_size` 提供的是 detached、可能过时的额外负样本，必须单独消融。
+- SAT 配置会加载通用 dino.txt alignment/text checkpoint，再替换为 SAT backbone；这正是需要测量的 domain mismatch 初始化，不应称为官方 SAT-dino.txt。
+- 首版使用文本最后 K 层解冻。LoRA、multi-text 与 local alignment 要在 MVP 基线稳定后分支实现。
+- ChatEarthNet HF 数据集预览存在 schema cast 问题，当前数据入口以作者提供的 Zenodo 压缩包为准。

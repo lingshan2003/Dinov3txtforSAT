@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dinotxt-rs"
+version = "0.1.0"
+description = "Domain-specific DINOv3 text alignment for remote sensing"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "ftfy>=6.3,<7",
+  "numpy>=2.0,<3",
+  "omegaconf>=2.3,<3",
+  "pillow>=11,<13",
+  "regex>=2024.11",
+  "termcolor>=2.5,<4",
+  "torchmetrics>=1.7,<2",
+  "tqdm>=4.67,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+dinotxt-rs-train = "dinotxt_rs.cli.train:main"
+dinotxt-rs-smoke = "dinotxt_rs.cli.smoke_model:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
