@@ -16,8 +16,8 @@ train_text_projection = true
 train_logit_scale = true
 
 [data]
-train_manifest = "assets/data/manifests/chatearthnet_train_10k.jsonl"
-val_manifest = "assets/data/manifests/chatearthnet_val.jsonl"
+train_manifest = "assets/data/manifests/chatearthnet_35_train_10k_seed11.jsonl"
+val_manifest = "assets/data/manifests/chatearthnet_35_val.jsonl"
 num_workers = 8
 
 [train]
@@ -33,4 +33,3 @@ max_grad_norm = 1.0
 queue_size = 4096
 log_every = 10
 checkpoint_every = 500
-

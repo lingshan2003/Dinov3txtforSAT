@@ -8,5 +8,7 @@ def test_load_mvp_config() -> None:
     assert config.model.backbone_domain == "web"
     assert config.model.image_size == 224
     assert config.model.text_last_k == 4
+    assert config.data.train_manifest.name == "chatearthnet_35_train_10k_seed11.jsonl"
+    assert config.data.val_manifest is not None
+    assert config.data.val_manifest.name == "chatearthnet_35_val.jsonl"
     assert config.train.queue_size == 4096
-
