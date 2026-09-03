@@ -42,3 +42,12 @@ def test_load_web_loss_trend_config() -> None:
     assert config.train.gradient_accumulation == 4
     assert config.train.queue_size == 4096
     assert config.train.checkpoint_every == 50
+
+
+def test_load_web_fixed_monitor_config() -> None:
+    config = load_config(Path("configs/verify_web_100step_fixed_monitor.toml"))
+    assert config.experiment.name == "m3_web_global77_100step_fixedmonitor_seed11"
+    assert config.data.fixed_monitor_manifest is not None
+    assert config.data.fixed_monitor_manifest.name.endswith("fixed16.jsonl")
+    assert config.data.fixed_monitor_batch_size == 16
+    assert config.train.fixed_monitor_every == 10

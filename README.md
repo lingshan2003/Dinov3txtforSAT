@@ -105,6 +105,14 @@ bash scripts/run_web_100step_verification.sh
 
 脚本使用完整 9,969 条训练清单、随机裁剪、shuffle、梯度累积和 4,096 条 queue，并在运行前拒绝未提交代码或既有输出目录。它会保存 smoke/train 日志、step 50/100 checkpoint，以及自动生成的 `verification_report.json`；完成 validation、best checkpoint 和 resume 后才可启动正式训练。
 
+若该 100-step 运行的随机 `in_batch_loss` 无法给出可比趋势（不同 step 的样本和裁剪不同），不要修改已运行配置或直接延长训练。改用新的固定监测配置：它保持真实训练语义，但以同一批无增强的 16 条样本在 step 0、10、…、100 下的 eval loss 判断趋势。
+
+```bash
+bash scripts/run_web_100step_fixed_monitor.sh
+```
+
+该脚本使用新的输出目录，重新生成并校验监测 manifest，随后验证固定监测曲线、训练曲线、资产身份与 step 50/100 checkpoint。报告以固定监测 loss 的首 3 个点（step 0/10/20）与末 3 个点（step 80/90/100）均值判断趋势。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构

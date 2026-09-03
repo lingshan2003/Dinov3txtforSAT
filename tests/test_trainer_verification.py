@@ -71,6 +71,8 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
             num_workers=0,
             train_augmentation=False,
             shuffle_train=False,
+            fixed_monitor_manifest=manifest,
+            fixed_monitor_batch_size=2,
         ),
         train=TrainConfig(
             device="cpu",
@@ -80,17 +82,22 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
             max_steps=2,
             warmup_steps=0,
             queue_size=2,
+            fixed_monitor_every=1,
             log_every=1,
             checkpoint_every=2,
         ),
         source=source,
     )
 
-    summary_path = train(config, TinyModel(), TinyTokenizer())
+    model = TinyModel()
+    summary_path = train(config, model, TinyTokenizer())
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     metrics = [
         json.loads(line) for line in (output_dir / "metrics.jsonl").read_text().splitlines()
+    ]
+    fixed_monitor = [
+        json.loads(line) for line in (output_dir / "fixed_monitor.jsonl").read_text().splitlines()
     ]
     assert summary["steps"] == 2
     assert summary["all_losses_finite"]
@@ -101,8 +108,14 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
     assert isinstance(summary["initial_in_batch_loss"], float)
     assert isinstance(summary["final_in_batch_loss"], float)
     assert Path(summary["final_checkpoint"]).is_file()
+    assert summary["fixed_monitor"]["samples"] == 2
+    assert summary["fixed_monitor"]["every"] == 1
     assert not list(output_dir.glob("*.part"))
     assert [record["step"] for record in metrics] == [1, 2]
     assert all(record["in_batch_loss"] >= 0 for record in metrics)
     assert all(record["gradient_norm"] >= 0 for record in metrics)
     assert [record["queue_size"] for record in metrics] == [2, 2]
+    assert [record["step"] for record in fixed_monitor] == [0, 1, 2]
+    assert all(record["loss"] >= 0 for record in fixed_monitor)
+    assert model.training
+    assert not model.visual_model.backbone.training

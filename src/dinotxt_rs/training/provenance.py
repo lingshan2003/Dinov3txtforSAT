@@ -39,6 +39,8 @@ def write_provenance(config: Config) -> Path:
     }
     if config.data.val_manifest is not None:
         files["val_manifest"] = config.data.val_manifest
+    if config.data.fixed_monitor_manifest is not None:
+        files["fixed_monitor_manifest"] = config.data.fixed_monitor_manifest
     payload = {
         "project_commit": git_commit(config.source.parent),
         "python": platform.python_version(),

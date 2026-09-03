@@ -88,6 +88,79 @@ def _peak_cuda_allocated_bytes(device: torch.device) -> int | None:
     return int(torch.cuda.max_memory_allocated(device))
 
 
+def _set_training_mode(model: Any) -> None:
+    model.train()
+    # The frozen backbone must remain deterministic while the alignment modules train.
+    model.visual_model.backbone.eval()
+
+
+def _load_fixed_monitor_batch(config: Config) -> dict[str, Any] | None:
+    manifest = config.data.fixed_monitor_manifest
+    batch_size = config.data.fixed_monitor_batch_size
+    if manifest is None or batch_size is None:
+        return None
+    dataset = ImageTextDataset(
+        manifest,
+        make_transform(config.model.image_size, config.model.backbone_domain, train=False),
+    )
+    if len(dataset) != batch_size:
+        raise ValueError(
+            "Fixed monitor manifest must contain exactly fixed_monitor_batch_size samples, got "
+            f"{len(dataset)} and {batch_size}"
+        )
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+        collate_fn=collate_image_text,
+    )
+    batch = next(iter(loader))
+    if len(batch["ids"]) != batch_size:
+        raise RuntimeError("Fixed monitor DataLoader did not return the configured full batch")
+    return batch
+
+
+def _evaluate_fixed_monitor(
+    *,
+    model: Any,
+    tokenizer: Any,
+    batch: dict[str, Any],
+    device: torch.device,
+    precision: str,
+) -> dict[str, float | int | None]:
+    was_training = model.training
+    model.eval()
+    try:
+        pixels = batch["pixels"].to(device, non_blocking=True)
+        tokens = tokenizer.tokenize(batch["captions"]).to(device, non_blocking=True)
+        if tokens.shape[0] != pixels.shape[0]:
+            raise RuntimeError(
+                "Fixed monitor tokenizer batch size does not match image batch size for samples: "
+                + ", ".join(batch["ids"][:5])
+            )
+        with torch.no_grad(), _autocast(device, precision):
+            image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
+            monitor_loss = symmetric_contrastive_loss(
+                image_features, text_features, logit_scale, queue=None
+            ).loss
+        _assert_finite_loss(monitor_loss, batch["ids"])
+        return {
+            "loss": float(monitor_loss),
+            "logit_scale": float(logit_scale.detach()),
+            "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
+        }
+    finally:
+        if was_training:
+            _set_training_mode(model)
+
+
+def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def train(config: Config, model: Any, tokenizer: Any) -> Path:
     seed_everything(config.experiment.seed)
     device = torch.device(config.train.device)
@@ -96,9 +169,7 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     model.to(device)
-    model.train()
-    # The backbone stays deterministic even while the trainable alignment heads are in train mode.
-    model.visual_model.backbone.eval()
+    _set_training_mode(model)
 
     transform = make_transform(
         config.model.image_size,
@@ -110,6 +181,7 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
         raise ValueError(
             f"Dataset has {len(dataset)} samples, fewer than batch_size={config.train.batch_size}"
         )
+    fixed_monitor_batch = _load_fixed_monitor_batch(config)
     loader_generator = torch.Generator()
     loader_generator.manual_seed(config.experiment.seed)
     loader = DataLoader(
@@ -145,6 +217,7 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
     provenance_path = write_provenance(config)
     print(f"provenance={provenance_path}", flush=True)
     metrics_path = output_dir / "metrics.jsonl"
+    fixed_monitor_path = output_dir / "fixed_monitor.jsonl"
     config_text = config.source.read_text(encoding="utf-8")
     (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
 
@@ -159,8 +232,22 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
     final_loss: float | None = None
     initial_in_batch_loss: float | None = None
     final_in_batch_loss: float | None = None
+    initial_fixed_monitor_loss: float | None = None
+    final_fixed_monitor_loss: float | None = None
     last_gradient_norm: float | None = None
     last_checkpoint_step = 0
+    if fixed_monitor_batch is not None:
+        fixed_monitor_record = _evaluate_fixed_monitor(
+            model=model,
+            tokenizer=tokenizer,
+            batch=fixed_monitor_batch,
+            device=device,
+            precision=config.train.precision,
+        )
+        fixed_monitor_record["step"] = 0
+        _append_jsonl(fixed_monitor_path, fixed_monitor_record)
+        initial_fixed_monitor_loss = float(fixed_monitor_record["loss"])
+        final_fixed_monitor_loss = initial_fixed_monitor_loss
     start = time.monotonic()
     while global_step < config.train.max_steps:
         for batch in loader:
@@ -214,6 +301,21 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
             running_loss += step_loss
             running_in_batch_loss += step_in_batch_loss
 
+            if (
+                fixed_monitor_batch is not None
+                and global_step % config.train.fixed_monitor_every == 0
+            ):
+                fixed_monitor_record = _evaluate_fixed_monitor(
+                    model=model,
+                    tokenizer=tokenizer,
+                    batch=fixed_monitor_batch,
+                    device=device,
+                    precision=config.train.precision,
+                )
+                fixed_monitor_record["step"] = global_step
+                _append_jsonl(fixed_monitor_path, fixed_monitor_record)
+                final_fixed_monitor_loss = float(fixed_monitor_record["loss"])
+
             if global_step % config.train.log_every == 0:
                 elapsed = time.monotonic() - start
                 record = {
@@ -227,8 +329,7 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                     "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
                     "elapsed_seconds": elapsed,
                 }
-                with metrics_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                _append_jsonl(metrics_path, record)
                 print(json.dumps(record, ensure_ascii=False), flush=True)
                 running_loss = 0.0
                 running_in_batch_loss = 0.0
@@ -286,5 +387,14 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
         "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
         "final_checkpoint": str(final_checkpoint),
     }
+    if fixed_monitor_batch is not None:
+        if initial_fixed_monitor_loss is None or final_fixed_monitor_loss is None:
+            raise RuntimeError("Fixed monitor was configured but did not produce a result")
+        summary["fixed_monitor"] = {
+            "samples": len(fixed_monitor_batch["ids"]),
+            "every": config.train.fixed_monitor_every,
+            "initial_loss": initial_fixed_monitor_loss,
+            "final_loss": final_fixed_monitor_loss,
+        }
     summary_path = _write_json_atomic(output_dir / "training_summary.json", summary)
     return summary_path

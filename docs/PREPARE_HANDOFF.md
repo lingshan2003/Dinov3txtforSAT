@@ -164,7 +164,7 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
 
 ## 5. 已完成的本地与服务器验证
 
-- 本地使用 `uv` 创建的 `.venv` 仅用于测试，不提交；当前已通过 `ruff check .`、`compileall`、`pytest`（15 passed）。
+- 本地使用 `uv` 创建的 `.venv` 仅用于测试，不提交；当前已通过 `ruff check .`、`compileall`、`pytest`（18 passed）。
 - 服务器已通过 `ruff check .`、测试、模型 synthetic smoke、真实 DataLoader smoke，以及上述 Web/SAT 的真实批次前向。
 - 35 train/val/test 清洗后已完成 manifest 审计：无重复 ID、无缺图、无空 caption，且三对 split 均为零 ID/内容哈希交集。
 
@@ -184,16 +184,17 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
    ```
 
    该配置关闭随机裁剪、shuffle 和 negative queue，并以 `num_workers = 0` 重复同一物理 batch。验收产物为输出目录中的 `config.toml`、`provenance.json`、`metrics.jsonl`（恰好 10 条记录）、`step_0000010.pt` 和 `training_summary.json`；后者必须报告有限的首末 loss、梯度及峰值 CUDA allocated bytes。
-2. 在 10-step 无异常后，以完整 9,969 条 `global77` 训练清单执行 Web 100-step 趋势验证：
+2. 初版完整训练清单的 Web 100-step 已通过结构性检查（数值、queue、step 50/100 checkpoint 与资产身份），但其 `in_batch_loss` 来自不同的随机样本和随机裁剪，前后窗口不可直接比较。保留该输出作为稳定性证据，不以它作优化趋势结论，也不修改已运行的不可变配置。
+3. 用固定监测 batch 重新运行独立的 Web 100-step 配置：
 
    ```bash
-   bash scripts/run_web_100step_verification.sh
+   bash scripts/run_web_100step_fixed_monitor.sh
    ```
 
-   该脚本拒绝覆盖已有输出或在未提交代码上运行，依次执行质量门槛、Web smoke、训练，并核验 `metrics.jsonl`、provenance、step 50/100 checkpoint 与原子写入结果。100-step 配置恢复随机裁剪、shuffle、`gradient_accumulation = 4` 和 `queue_size = 4096`，因此训练目标 `loss` 会随 queue 在约 64 个优化步内填满而改变其负样本集合；不应要求它逐步单调下降。使用 `verification_report.json` 中不含 queue 的 `in_batch_loss.mean_first_window` 与 `mean_last_window` 判断趋势，同时确认全部数值有限、显存稳定且两个 checkpoint 均存在。
-3. 实现/验证 validation、best checkpoint 与 resume；随后才做 SAT 的等价受限验证。
-4. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
-5. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
+   训练继续使用完整 9,969 条 `global77` 清单、随机裁剪、shuffle、`gradient_accumulation = 4` 和 `queue_size = 4096`。固定的 16 条 `global77` 样本仅在 step 0、10、…、100 时以 `model.eval()` 和无增强预处理计算不含 queue 的 loss。脚本会重新生成并 hash 校验此监测 manifest，且核验 `metrics.jsonl`、fixed-monitor 曲线、provenance、step 50/100 checkpoint 与原子写入结果。以 `verification_report.json` 的 `fixed_monitor_loss.mean_first_window` 与 `mean_last_window` 判断趋势；该字段的 `window_size` 为 3，分别比较 step 0/10/20 与 step 80/90/100。
+4. 固定监测 loss 具有可解释的下降趋势后，实现/验证 validation、best checkpoint 与 resume；随后才做 SAT 的等价受限验证。
+5. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
+6. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
 
 正式实验前需要留存的证据包括：配置快照、代码 commit、每个 manifest 的 SHA-256、随机种子、硬件/软件环境、训练/验证曲线、最佳 checkpoint、恢复训练结果以及 EuroSAT/RSICD 指标。
 

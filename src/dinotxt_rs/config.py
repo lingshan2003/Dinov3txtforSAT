@@ -35,6 +35,8 @@ class DataConfig:
     num_workers: int = 8
     train_augmentation: bool = True
     shuffle_train: bool = True
+    fixed_monitor_manifest: Path | None = None
+    fixed_monitor_batch_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class TrainConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     queue_size: int = 0
+    fixed_monitor_every: int = 0
     log_every: int = 10
     checkpoint_every: int = 500
 
@@ -107,6 +110,12 @@ def load_config(path: str | Path) -> Config:
             num_workers=int(data.get("num_workers", 8)),
             train_augmentation=bool(data.get("train_augmentation", True)),
             shuffle_train=bool(data.get("shuffle_train", True)),
+            fixed_monitor_manifest=_path(data.get("fixed_monitor_manifest")),
+            fixed_monitor_batch_size=(
+                None
+                if data.get("fixed_monitor_batch_size") is None
+                else int(data["fixed_monitor_batch_size"])
+            ),
         ),
         train=TrainConfig(
             device=str(train.get("device", "cuda")),
@@ -119,6 +128,7 @@ def load_config(path: str | Path) -> Config:
             weight_decay=float(train.get("weight_decay", 0.01)),
             max_grad_norm=float(train.get("max_grad_norm", 1.0)),
             queue_size=int(train.get("queue_size", 0)),
+            fixed_monitor_every=int(train.get("fixed_monitor_every", 0)),
             log_every=int(train.get("log_every", 10)),
             checkpoint_every=int(train.get("checkpoint_every", 500)),
         ),
@@ -147,15 +157,32 @@ def validate_config(config: Config) -> None:
     for name, value in positive.items():
         if value <= 0:
             raise ValueError(f"train.{name} must be positive")
+    has_fixed_monitor = config.data.fixed_monitor_manifest is not None
+    if has_fixed_monitor != (config.data.fixed_monitor_batch_size is not None):
+        raise ValueError(
+            "data.fixed_monitor_manifest and data.fixed_monitor_batch_size must be set together"
+        )
+    if has_fixed_monitor:
+        if config.data.fixed_monitor_batch_size <= 0:
+            raise ValueError("data.fixed_monitor_batch_size must be positive")
+        if config.train.fixed_monitor_every <= 0:
+            raise ValueError(
+                "train.fixed_monitor_every must be positive when a fixed monitor is set"
+            )
+    elif config.train.fixed_monitor_every:
+        raise ValueError("train.fixed_monitor_every requires data.fixed_monitor_manifest")
     if config.train.warmup_steps >= config.train.max_steps:
         raise ValueError("train.warmup_steps must be smaller than train.max_steps")
 
 
 def required_paths(config: Config) -> list[Path]:
-    return [
+    paths = [
         config.model.dinov3_repo,
         config.model.backbone_weights,
         config.model.dinotxt_weights,
         config.model.bpe_vocab,
         config.data.train_manifest,
     ]
+    if config.data.fixed_monitor_manifest is not None:
+        paths.append(config.data.fixed_monitor_manifest)
+    return paths

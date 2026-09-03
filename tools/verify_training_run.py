@@ -20,6 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-final-queue-size", type=int)
     parser.add_argument("--required-checkpoint-step", action="append", type=int, default=[])
     parser.add_argument("--require-in-batch-loss", action="store_true")
+    parser.add_argument("--require-fixed-monitor", action="store_true")
+    parser.add_argument("--expected-fixed-monitor-manifest-sha256")
+    parser.add_argument("--fixed-monitor-every", type=int)
     return parser.parse_args()
 
 
@@ -54,9 +57,12 @@ def _finite(value: Any, label: str) -> float:
     return result
 
 
-def _series_summary(values: list[float]) -> dict[str, float]:
-    window = min(10, len(values))
+def _series_summary(
+    values: list[float], *, preferred_window_size: int = 10
+) -> dict[str, float | int]:
+    window = min(preferred_window_size, len(values))
     return {
+        "window_size": window,
         "first": values[0],
         "last": values[-1],
         "min": min(values),
@@ -75,9 +81,20 @@ def verify_training_run(
     expected_final_queue_size: int | None = None,
     required_checkpoint_steps: tuple[int, ...] = (),
     require_in_batch_loss: bool = False,
+    require_fixed_monitor: bool = False,
+    expected_fixed_monitor_manifest_sha256: str | None = None,
+    fixed_monitor_every: int | None = None,
 ) -> dict[str, Any]:
     if expected_steps <= 0:
         raise ValueError("expected_steps must be positive")
+    if require_fixed_monitor and (
+        expected_fixed_monitor_manifest_sha256 is None or fixed_monitor_every is None
+    ):
+        raise ValueError(
+            "A required fixed monitor needs its expected manifest SHA-256 and interval"
+        )
+    if fixed_monitor_every is not None and fixed_monitor_every <= 0:
+        raise ValueError("fixed_monitor_every must be positive")
     output_dir = output_dir.resolve()
     metrics_path = output_dir / "metrics.jsonl"
     summary_path = output_dir / "training_summary.json"
@@ -131,6 +148,32 @@ def verify_training_run(
     if require_in_batch_loss:
         for field in ("initial_in_batch_loss", "final_in_batch_loss"):
             _finite(summary.get(field), f"summary {field}")
+    fixed_monitor_losses: list[float] = []
+    if require_fixed_monitor:
+        fixed_monitor_path = output_dir / "fixed_monitor.jsonl"
+        if not fixed_monitor_path.is_file():
+            raise FileNotFoundError(f"Missing fixed monitor metrics: {fixed_monitor_path}")
+        fixed_monitor_records = _read_metrics(fixed_monitor_path)
+        expected_monitor_steps = list(range(0, expected_steps + 1, fixed_monitor_every))
+        monitor_steps = [record.get("step") for record in fixed_monitor_records]
+        if monitor_steps != expected_monitor_steps:
+            raise ValueError(
+                "Unexpected fixed monitor steps: "
+                f"expected {expected_monitor_steps}, got {monitor_steps}"
+            )
+        for step, record in zip(monitor_steps, fixed_monitor_records, strict=True):
+            fixed_monitor_losses.append(_finite(record.get("loss"), f"monitor step {step} loss"))
+            _finite(record.get("logit_scale"), f"monitor step {step} logit_scale")
+        fixed_monitor_summary = summary.get("fixed_monitor")
+        if not isinstance(fixed_monitor_summary, dict):
+            raise ValueError("Summary has no fixed_monitor section")
+        if fixed_monitor_summary.get("every") != fixed_monitor_every:
+            raise ValueError(
+                "Unexpected fixed monitor interval: "
+                f"expected {fixed_monitor_every}, got {fixed_monitor_summary.get('every')!r}"
+            )
+        for field in ("initial_loss", "final_loss"):
+            _finite(fixed_monitor_summary.get(field), f"summary fixed_monitor {field}")
     checkpoint = Path(str(summary.get("final_checkpoint", "")))
     if not checkpoint.is_absolute():
         checkpoint = Path.cwd() / checkpoint
@@ -152,6 +195,16 @@ def verify_training_run(
             "Unexpected training manifest SHA-256: "
             f"expected {expected_train_manifest_sha256}, got {observed_sha!r}"
         )
+    if require_fixed_monitor:
+        observed_fixed_monitor_sha = (
+            provenance.get("files", {}).get("fixed_monitor_manifest", {}).get("sha256")
+        )
+        if observed_fixed_monitor_sha != expected_fixed_monitor_manifest_sha256:
+            raise ValueError(
+                "Unexpected fixed monitor manifest SHA-256: "
+                f"expected {expected_fixed_monitor_manifest_sha256}, "
+                f"got {observed_fixed_monitor_sha!r}"
+            )
     if expected_dinov3_commit is not None:
         observed_dinov3_commit = provenance.get("dinov3_commit")
         if observed_dinov3_commit != expected_dinov3_commit:
@@ -186,6 +239,10 @@ def verify_training_run(
     }
     if require_in_batch_loss:
         report["in_batch_loss"] = _series_summary(in_batch_losses)
+    if require_fixed_monitor:
+        report["fixed_monitor_loss"] = _series_summary(
+            fixed_monitor_losses, preferred_window_size=3
+        )
     return report
 
 
@@ -199,6 +256,9 @@ def main() -> None:
         expected_final_queue_size=args.expected_final_queue_size,
         required_checkpoint_steps=tuple(args.required_checkpoint_step),
         require_in_batch_loss=args.require_in_batch_loss,
+        require_fixed_monitor=args.require_fixed_monitor,
+        expected_fixed_monitor_manifest_sha256=args.expected_fixed_monitor_manifest_sha256,
+        fixed_monitor_every=args.fixed_monitor_every,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

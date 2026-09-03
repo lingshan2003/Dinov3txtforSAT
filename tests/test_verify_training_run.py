@@ -33,6 +33,14 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
     (output / "metrics.jsonl").write_text(
         "".join(json.dumps(record) + "\n" for record in metrics), encoding="utf-8"
     )
+    fixed_monitor = [
+        {"step": 0, "loss": 2.5, "logit_scale": 100.0},
+        {"step": 1, "loss": 2.0, "logit_scale": 99.0},
+        {"step": 2, "loss": 1.5, "logit_scale": 98.0},
+    ]
+    (output / "fixed_monitor.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in fixed_monitor), encoding="utf-8"
+    )
     (output / "training_summary.json").write_text(
         json.dumps(
             {
@@ -46,6 +54,7 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
                 "last_gradient_norm": 4.0,
                 "queue_size": 4,
                 "final_checkpoint": str(checkpoint),
+                "fixed_monitor": {"samples": 2, "every": 1, "initial_loss": 2.5, "final_loss": 1.5},
             }
         ),
         encoding="utf-8",
@@ -55,7 +64,10 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
             {
                 "project_commit": "project",
                 "dinov3_commit": "dinov3",
-                "files": {"train_manifest": {"sha256": "manifest"}},
+                "files": {
+                    "train_manifest": {"sha256": "manifest"},
+                    "fixed_monitor_manifest": {"sha256": "monitor"},
+                },
             }
         ),
         encoding="utf-8",
@@ -69,6 +81,9 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
         expected_final_queue_size=4,
         required_checkpoint_steps=(1, 2),
         require_in_batch_loss=True,
+        require_fixed_monitor=True,
+        expected_fixed_monitor_manifest_sha256="monitor",
+        fixed_monitor_every=1,
     )
 
     assert report["loss"]["mean_first_window"] == 2.5
@@ -76,3 +91,4 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
     assert report["peak_cuda_allocated_bytes"] == 120
     assert report["final_queue_size"] == 4
     assert len(report["required_checkpoints"]) == 2
+    assert report["fixed_monitor_loss"]["last"] == 1.5
