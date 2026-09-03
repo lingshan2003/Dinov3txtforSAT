@@ -33,6 +33,8 @@ class DataConfig:
     train_manifest: Path
     val_manifest: Path | None = None
     num_workers: int = 8
+    train_augmentation: bool = True
+    shuffle_train: bool = True
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,8 @@ def load_config(path: str | Path) -> Config:
             train_manifest=Path(data["train_manifest"]),
             val_manifest=_path(data.get("val_manifest")),
             num_workers=int(data.get("num_workers", 8)),
+            train_augmentation=bool(data.get("train_augmentation", True)),
+            shuffle_train=bool(data.get("shuffle_train", True)),
         ),
         train=TrainConfig(
             device=str(train.get("device", "cuda")),
@@ -155,4 +159,3 @@ def required_paths(config: Config) -> list[Path]:
         config.model.bpe_vocab,
         config.data.train_manifest,
     ]
-

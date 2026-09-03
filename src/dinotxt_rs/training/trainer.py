@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import time
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -42,33 +44,91 @@ def _scheduler(optimizer: Any, warmup: int, total: int):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
-def train(config: Config, model: Any, tokenizer: Any) -> None:
+def _assert_finite_loss(loss: torch.Tensor, sample_ids: list[str]) -> None:
+    if not torch.isfinite(loss).all():
+        preview = ", ".join(sample_ids[:5])
+        raise FloatingPointError(f"Non-finite loss for samples: {preview}")
+
+
+def _checked_grad_norm(
+    named_parameters: list[tuple[str, torch.nn.Parameter]], max_grad_norm: float
+) -> float:
+    missing_gradients: list[str] = []
+    for name, parameter in named_parameters:
+        if parameter.grad is None:
+            missing_gradients.append(name)
+            continue
+        if not torch.isfinite(parameter.grad).all():
+            raise FloatingPointError(f"Non-finite gradient for trainable parameter: {name}")
+    if missing_gradients:
+        preview = ", ".join(missing_gradients[:5])
+        raise RuntimeError(f"No gradient was produced for trainable parameter(s): {preview}")
+
+    gradient_norm = torch.nn.utils.clip_grad_norm_(
+        [parameter for _, parameter in named_parameters],
+        max_grad_norm,
+        error_if_nonfinite=True,
+    )
+    value = float(gradient_norm)
+    if not math.isfinite(value):
+        raise FloatingPointError(f"Non-finite gradient norm: {value}")
+    return value
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> Path:
+    temporary = path.with_suffix(path.suffix + ".part")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+    return path
+
+
+def _peak_cuda_allocated_bytes(device: torch.device) -> int | None:
+    if device.type != "cuda":
+        return None
+    return int(torch.cuda.max_memory_allocated(device))
+
+
+def train(config: Config, model: Any, tokenizer: Any) -> Path:
     seed_everything(config.experiment.seed)
     device = torch.device(config.train.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     model.to(device)
     model.train()
     # The backbone stays deterministic even while the trainable alignment heads are in train mode.
     model.visual_model.backbone.eval()
 
-    transform = make_transform(config.model.image_size, config.model.backbone_domain, train=True)
+    transform = make_transform(
+        config.model.image_size,
+        config.model.backbone_domain,
+        train=config.data.train_augmentation,
+    )
     dataset = ImageTextDataset(config.data.train_manifest, transform)
     if len(dataset) < config.train.batch_size:
         raise ValueError(
             f"Dataset has {len(dataset)} samples, fewer than batch_size={config.train.batch_size}"
         )
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(config.experiment.seed)
     loader = DataLoader(
         dataset,
         batch_size=config.train.batch_size,
-        shuffle=True,
+        shuffle=config.data.shuffle_train,
         num_workers=config.data.num_workers,
         pin_memory=device.type == "cuda",
         persistent_workers=config.data.num_workers > 0,
         drop_last=True,
         collate_fn=collate_image_text,
+        generator=loader_generator,
     )
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    named_parameters = [
+        (name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad
+    ]
+    parameters = [parameter for _, parameter in named_parameters]
+    if not parameters:
+        raise ValueError("Model has no trainable parameters")
     optimizer = torch.optim.AdamW(
         parameters,
         lr=config.train.learning_rate,
@@ -76,7 +136,9 @@ def train(config: Config, model: Any, tokenizer: Any) -> None:
         betas=(0.9, 0.99),
     )
     scheduler = _scheduler(optimizer, config.train.warmup_steps, config.train.max_steps)
-    scaler = torch.amp.GradScaler("cuda", enabled=config.train.precision == "fp16")
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=device.type == "cuda" and config.train.precision == "fp16"
+    )
     queue = EmbeddingQueue(config.train.queue_size)
     output_dir = config.experiment.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -90,26 +152,39 @@ def train(config: Config, model: Any, tokenizer: Any) -> None:
     global_step = 0
     micro_step = 0
     running_loss = 0.0
+    optimizer_step_loss = 0.0
+    initial_loss: float | None = None
+    final_loss: float | None = None
+    last_gradient_norm: float | None = None
+    last_checkpoint_step = 0
     start = time.monotonic()
     while global_step < config.train.max_steps:
         for batch in loader:
+            if not batch["ids"]:
+                raise RuntimeError("DataLoader produced an empty batch")
             pixels = batch["pixels"].to(device, non_blocking=True)
             tokens = tokenizer.tokenize(batch["captions"]).to(device, non_blocking=True)
+            if tokens.shape[0] != pixels.shape[0]:
+                raise RuntimeError(
+                    "Tokenizer batch size does not match image batch size for samples: "
+                    + ", ".join(batch["ids"][:5])
+                )
             with _autocast(device, config.train.precision):
                 image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
                 loss_output = symmetric_contrastive_loss(
                     image_features, text_features, logit_scale, queue=queue
                 )
+                _assert_finite_loss(loss_output.loss, batch["ids"])
                 loss = loss_output.loss / config.train.gradient_accumulation
             scaler.scale(loss).backward()
             queue.enqueue(image_features, text_features)
-            running_loss += float(loss_output.loss.detach())
+            optimizer_step_loss += float(loss_output.loss.detach())
             micro_step += 1
             if micro_step % config.train.gradient_accumulation:
                 continue
 
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(parameters, config.train.max_grad_norm)
+            last_gradient_norm = _checked_grad_norm(named_parameters, config.train.max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
@@ -117,16 +192,23 @@ def train(config: Config, model: Any, tokenizer: Any) -> None:
             with torch.no_grad():
                 model.logit_scale.clamp_(0.0, math.log(100.0))
             global_step += 1
+            step_loss = optimizer_step_loss / config.train.gradient_accumulation
+            optimizer_step_loss = 0.0
+            if initial_loss is None:
+                initial_loss = step_loss
+            final_loss = step_loss
+            running_loss += step_loss
 
             if global_step % config.train.log_every == 0:
                 elapsed = time.monotonic() - start
                 record = {
                     "step": global_step,
-                    "loss": running_loss
-                    / (config.train.log_every * config.train.gradient_accumulation),
+                    "loss": running_loss / config.train.log_every,
                     "lr": scheduler.get_last_lr()[0],
                     "logit_scale": float(model.logit_scale.exp().detach()),
+                    "gradient_norm": last_gradient_norm,
                     "queue_size": len(queue),
+                    "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
                     "elapsed_seconds": elapsed,
                 }
                 with metrics_path.open("a", encoding="utf-8") as handle:
@@ -145,14 +227,39 @@ def train(config: Config, model: Any, tokenizer: Any) -> None:
                     config_text=config_text,
                 )
                 print(f"checkpoint={path}", flush=True)
+                last_checkpoint_step = global_step
             if global_step >= config.train.max_steps:
                 break
 
-    save_checkpoint(
-        output_dir,
-        model=model,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        step=global_step,
-        config_text=config_text,
-    )
+    if global_step != last_checkpoint_step:
+        final_checkpoint = save_checkpoint(
+            output_dir,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            step=global_step,
+            config_text=config_text,
+        )
+    else:
+        final_checkpoint = output_dir / f"step_{global_step:07d}.pt"
+    if initial_loss is None or final_loss is None or last_gradient_norm is None:
+        raise RuntimeError("Training completed without an optimizer step")
+    summary = {
+        "format_version": 1,
+        "steps": global_step,
+        "samples_in_manifest": len(dataset),
+        "batch_size": config.train.batch_size,
+        "gradient_accumulation": config.train.gradient_accumulation,
+        "train_augmentation": config.data.train_augmentation,
+        "shuffle_train": config.data.shuffle_train,
+        "queue_size": config.train.queue_size,
+        "initial_loss": initial_loss,
+        "final_loss": final_loss,
+        "last_gradient_norm": last_gradient_norm,
+        "all_losses_finite": True,
+        "all_gradients_finite": True,
+        "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
+        "final_checkpoint": str(final_checkpoint),
+    }
+    summary_path = _write_json_atomic(output_dir / "training_summary.json", summary)
+    return summary_path

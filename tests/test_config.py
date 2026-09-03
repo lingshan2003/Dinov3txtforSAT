@@ -15,3 +15,17 @@ def test_load_mvp_config() -> None:
     assert config.data.val_manifest is not None
     assert config.data.val_manifest.name == "chatearthnet_35_val_no_nodata_global77.jsonl"
     assert config.train.queue_size == 4096
+
+
+def test_load_bounded_web_verification_config() -> None:
+    config = load_config(Path("configs/verify_web_10step.toml"))
+    assert config.experiment.name == "m3_web_global77_fixed16_10step_seed11"
+    assert config.data.train_manifest.name.endswith("fixed16.jsonl")
+    assert not config.data.train_augmentation
+    assert not config.data.shuffle_train
+    assert config.data.num_workers == 0
+    assert config.train.max_steps == 10
+    assert config.train.gradient_accumulation == 1
+    assert config.train.queue_size == 0
+    assert config.train.log_every == 1
+    assert config.train.checkpoint_every == 10

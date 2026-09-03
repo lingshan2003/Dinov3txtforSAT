@@ -31,12 +31,16 @@ def git_commit(repo: Path) -> str | None:
 
 def write_provenance(config: Config) -> Path:
     files = {
+        "config": config.source,
         "backbone_weights": config.model.backbone_weights,
         "dinotxt_weights": config.model.dinotxt_weights,
         "bpe_vocab": config.model.bpe_vocab,
         "train_manifest": config.data.train_manifest,
     }
+    if config.data.val_manifest is not None:
+        files["val_manifest"] = config.data.val_manifest
     payload = {
+        "project_commit": git_commit(config.source.parent),
         "python": platform.python_version(),
         "platform": platform.platform(),
         "torch": torch.__version__,

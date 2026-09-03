@@ -37,7 +37,8 @@ def main() -> None:
         f"parameters total={counts['total']:,} "
         f"trainable={counts['trainable']:,} ratio={ratio:.3%}"
     )
-    train(config, model, tokenizer)
+    summary_path = train(config, model, tokenizer)
+    print(f"training_summary={summary_path}", flush=True)
 
 
 if __name__ == "__main__":

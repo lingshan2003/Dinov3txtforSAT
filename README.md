@@ -86,13 +86,20 @@ dinotxt-rs-smoke --config configs/train_mvp_web.toml
 dinotxt-rs-smoke --config configs/train_mvp_sat.toml
 ```
 
-正式训练前，先把配置中的 manifest 路径确认无误，然后：
+M0–M2 已完成后，**不要直接启动** `train_mvp_web.toml` 的 5,000-step 正式训练。先从已清洗的 `global77` manifest 固化一个固定 batch，并执行受限 Web 10-step 验证：
 
 ```bash
-dinotxt-rs-train --config configs/train_mvp_web.toml
+python tools/prepare_fixed_manifest.py \
+  --input assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77.jsonl \
+  --output assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77_fixed16.jsonl \
+  --limit 16 \
+  --audit-output assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77_fixed16.audit.json
+dinotxt-rs-train --config configs/verify_web_10step.toml
 ```
 
-训练启动时会计算当前 backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将 GPU/CUDA、Python、PyTorch 与 DINOv3 commit 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
+该配置重复同一批 16 条样本，关闭随机裁剪、shuffle 与 negative queue，只用于检查反向传播、数值稳定性、显存与 checkpoint 写入。验收 `metrics.jsonl` 的 10 条记录以及 `training_summary.json` 后，再进行 Web 100-step 趋势验证；完成 validation、best checkpoint 和 resume 后才可启动正式训练。
+
+训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构
 
