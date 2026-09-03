@@ -20,10 +20,10 @@ def make_transform(image_size: int, backbone_domain: str, train: bool = True) ->
     mean, std = (SAT_MEAN, SAT_STD) if backbone_domain == "sat" else (WEB_MEAN, WEB_STD)
     spatial: list[Callable[..., Any]]
     if train:
+        # Captions can encode north/south/east/west relationships, so geometry-changing
+        # flips are not valid unless captions are transformed with the image.
         spatial = [
             v2.RandomResizedCrop((image_size, image_size), scale=(0.7, 1.0), antialias=True),
-            v2.RandomHorizontalFlip(),
-            v2.RandomVerticalFlip(),
         ]
     else:
         spatial = [v2.Resize((image_size, image_size), antialias=True)]
