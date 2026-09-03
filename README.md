@@ -97,7 +97,13 @@ python tools/prepare_fixed_manifest.py \
 dinotxt-rs-train --config configs/verify_web_10step.toml
 ```
 
-该配置重复同一批 16 条样本，关闭随机裁剪、shuffle 与 negative queue，只用于检查反向传播、数值稳定性、显存与 checkpoint 写入。验收 `metrics.jsonl` 的 10 条记录以及 `training_summary.json` 后，再进行 Web 100-step 趋势验证；完成 validation、best checkpoint 和 resume 后才可启动正式训练。
+该配置重复同一批 16 条样本，关闭随机裁剪、shuffle 与 negative queue，只用于检查反向传播、数值稳定性、显存与 checkpoint 写入。验收 `metrics.jsonl` 的 10 条记录以及 `training_summary.json` 后，运行下列可复现实验脚本完成 Web 100-step 趋势验证：
+
+```bash
+bash scripts/run_web_100step_verification.sh
+```
+
+脚本使用完整 9,969 条训练清单、随机裁剪、shuffle、梯度累积和 4,096 条 queue，并在运行前拒绝未提交代码或既有输出目录。它会保存 smoke/train 日志、step 50/100 checkpoint，以及自动生成的 `verification_report.json`；完成 validation、best checkpoint 和 resume 后才可启动正式训练。
 
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 

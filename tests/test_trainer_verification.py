@@ -79,7 +79,7 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
             gradient_accumulation=1,
             max_steps=2,
             warmup_steps=0,
-            queue_size=0,
+            queue_size=2,
             log_every=1,
             checkpoint_every=2,
         ),
@@ -98,7 +98,11 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
     assert summary["peak_cuda_allocated_bytes"] is None
     assert isinstance(summary["initial_loss"], float)
     assert isinstance(summary["final_loss"], float)
+    assert isinstance(summary["initial_in_batch_loss"], float)
+    assert isinstance(summary["final_in_batch_loss"], float)
     assert Path(summary["final_checkpoint"]).is_file()
     assert not list(output_dir.glob("*.part"))
     assert [record["step"] for record in metrics] == [1, 2]
+    assert all(record["in_batch_loss"] >= 0 for record in metrics)
     assert all(record["gradient_norm"] >= 0 for record in metrics)
+    assert [record["queue_size"] for record in metrics] == [2, 2]

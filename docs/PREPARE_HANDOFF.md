@@ -184,7 +184,13 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
    ```
 
    该配置关闭随机裁剪、shuffle 和 negative queue，并以 `num_workers = 0` 重复同一物理 batch。验收产物为输出目录中的 `config.toml`、`provenance.json`、`metrics.jsonl`（恰好 10 条记录）、`step_0000010.pt` 和 `training_summary.json`；后者必须报告有限的首末 loss、梯度及峰值 CUDA allocated bytes。
-2. 在 10-step 无异常后，执行 Web 100-step loss 趋势验证，确认不会 NaN/Inf、loss 具有可解释趋势、checkpoint 写入行为正确。
+2. 在 10-step 无异常后，以完整 9,969 条 `global77` 训练清单执行 Web 100-step 趋势验证：
+
+   ```bash
+   bash scripts/run_web_100step_verification.sh
+   ```
+
+   该脚本拒绝覆盖已有输出或在未提交代码上运行，依次执行质量门槛、Web smoke、训练，并核验 `metrics.jsonl`、provenance、step 50/100 checkpoint 与原子写入结果。100-step 配置恢复随机裁剪、shuffle、`gradient_accumulation = 4` 和 `queue_size = 4096`，因此训练目标 `loss` 会随 queue 在约 64 个优化步内填满而改变其负样本集合；不应要求它逐步单调下降。使用 `verification_report.json` 中不含 queue 的 `in_batch_loss.mean_first_window` 与 `mean_last_window` 判断趋势，同时确认全部数值有限、显存稳定且两个 checkpoint 均存在。
 3. 实现/验证 validation、best checkpoint 与 resume；随后才做 SAT 的等价受限验证。
 4. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
 5. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。

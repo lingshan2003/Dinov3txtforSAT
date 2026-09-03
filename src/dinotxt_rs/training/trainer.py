@@ -152,9 +152,13 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
     global_step = 0
     micro_step = 0
     running_loss = 0.0
+    running_in_batch_loss = 0.0
     optimizer_step_loss = 0.0
+    optimizer_step_in_batch_loss = 0.0
     initial_loss: float | None = None
     final_loss: float | None = None
+    initial_in_batch_loss: float | None = None
+    final_in_batch_loss: float | None = None
     last_gradient_norm: float | None = None
     last_checkpoint_step = 0
     start = time.monotonic()
@@ -176,9 +180,15 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                 )
                 _assert_finite_loss(loss_output.loss, batch["ids"])
                 loss = loss_output.loss / config.train.gradient_accumulation
+            with torch.no_grad():
+                in_batch_loss = symmetric_contrastive_loss(
+                    image_features, text_features, logit_scale, queue=None
+                ).loss
+                _assert_finite_loss(in_batch_loss, batch["ids"])
             scaler.scale(loss).backward()
             queue.enqueue(image_features, text_features)
             optimizer_step_loss += float(loss_output.loss.detach())
+            optimizer_step_in_batch_loss += float(in_batch_loss)
             micro_step += 1
             if micro_step % config.train.gradient_accumulation:
                 continue
@@ -193,17 +203,23 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                 model.logit_scale.clamp_(0.0, math.log(100.0))
             global_step += 1
             step_loss = optimizer_step_loss / config.train.gradient_accumulation
+            step_in_batch_loss = optimizer_step_in_batch_loss / config.train.gradient_accumulation
             optimizer_step_loss = 0.0
+            optimizer_step_in_batch_loss = 0.0
             if initial_loss is None:
                 initial_loss = step_loss
+                initial_in_batch_loss = step_in_batch_loss
             final_loss = step_loss
+            final_in_batch_loss = step_in_batch_loss
             running_loss += step_loss
+            running_in_batch_loss += step_in_batch_loss
 
             if global_step % config.train.log_every == 0:
                 elapsed = time.monotonic() - start
                 record = {
                     "step": global_step,
                     "loss": running_loss / config.train.log_every,
+                    "in_batch_loss": running_in_batch_loss / config.train.log_every,
                     "lr": scheduler.get_last_lr()[0],
                     "logit_scale": float(model.logit_scale.exp().detach()),
                     "gradient_norm": last_gradient_norm,
@@ -215,6 +231,7 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                 print(json.dumps(record, ensure_ascii=False), flush=True)
                 running_loss = 0.0
+                running_in_batch_loss = 0.0
                 start = time.monotonic()
 
             if global_step % config.train.checkpoint_every == 0:
@@ -242,7 +259,13 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
         )
     else:
         final_checkpoint = output_dir / f"step_{global_step:07d}.pt"
-    if initial_loss is None or final_loss is None or last_gradient_norm is None:
+    if (
+        initial_loss is None
+        or final_loss is None
+        or initial_in_batch_loss is None
+        or final_in_batch_loss is None
+        or last_gradient_norm is None
+    ):
         raise RuntimeError("Training completed without an optimizer step")
     summary = {
         "format_version": 1,
@@ -255,6 +278,8 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
         "queue_size": config.train.queue_size,
         "initial_loss": initial_loss,
         "final_loss": final_loss,
+        "initial_in_batch_loss": initial_in_batch_loss,
+        "final_in_batch_loss": final_in_batch_loss,
         "last_gradient_norm": last_gradient_norm,
         "all_losses_finite": True,
         "all_gradients_finite": True,

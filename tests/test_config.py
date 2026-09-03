@@ -29,3 +29,16 @@ def test_load_bounded_web_verification_config() -> None:
     assert config.train.queue_size == 0
     assert config.train.log_every == 1
     assert config.train.checkpoint_every == 10
+
+
+def test_load_web_loss_trend_config() -> None:
+    config = load_config(Path("configs/verify_web_100step.toml"))
+    assert config.experiment.name == "m3_web_global77_100step_seed11"
+    assert config.data.train_augmentation
+    assert config.data.shuffle_train
+    assert config.data.num_workers == 8
+    assert config.train.max_steps == 100
+    assert config.train.warmup_steps == 5
+    assert config.train.gradient_accumulation == 4
+    assert config.train.queue_size == 4096
+    assert config.train.checkpoint_every == 50

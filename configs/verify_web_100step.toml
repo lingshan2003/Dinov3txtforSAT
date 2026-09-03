@@ -1,0 +1,36 @@
+[experiment]
+name = "m3_web_global77_100step_seed11"
+seed = 11
+output_dir = "outputs/m3_web_global77_100step_seed11"
+
+[model]
+dinov3_repo = "external/dinov3"
+backbone_domain = "web"
+backbone_weights = "assets/checkpoints/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+dinotxt_weights = "assets/checkpoints/dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth"
+bpe_vocab = "assets/checkpoints/bpe_simple_vocab_16e6.txt.gz"
+image_size = 224
+text_last_k = 4
+train_vision_head = true
+train_text_projection = true
+train_logit_scale = true
+
+[data]
+train_manifest = "assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77.jsonl"
+num_workers = 8
+train_augmentation = true
+shuffle_train = true
+
+[train]
+device = "cuda"
+precision = "bf16"
+batch_size = 16
+gradient_accumulation = 4
+max_steps = 100
+warmup_steps = 5
+learning_rate = 0.00005
+weight_decay = 0.01
+max_grad_norm = 1.0
+queue_size = 4096
+log_every = 1
+checkpoint_every = 50
