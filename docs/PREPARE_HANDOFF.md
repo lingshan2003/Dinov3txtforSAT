@@ -206,7 +206,17 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
 7. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
 8. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
 
-正式实验前需要留存的证据包括：配置快照、代码 commit、每个 manifest 的 SHA-256、随机种子、硬件/软件环境、训练/验证曲线、最佳 checkpoint、恢复训练结果以及 EuroSAT/RSICD 指标。
+正式实验前需要留存的证据包括：配置快照、代码 commit、每个 manifest 的 SHA-256、随机种子、硬件/软件环境、训练/验证曲线、最佳 checkpoint、恢复训练结果以及 EuroSAT/RSICD 指标。**在 `verification_report.json` 成功写出前，不得删除协议要求的任何 `step_*.pt`。** `best.pt` 只是当时全局最优 step checkpoint 的硬链接或副本，不能替代任意一个不同 step 的 resume checkpoint。若误删后需要盘点剩余证据，以只读诊断工具生成小报告（不会伪造 checkpoint）：
+
+```bash
+OUTPUT=outputs/m3_web_global77_formalschedule_500step_pilot_seed11
+python tools/inspect_training_artifacts.py \
+  --output "$OUTPUT" \
+  --expected-checkpoint-step 0 \
+  --expected-checkpoint-step 250 \
+  --expected-checkpoint-step 500 \
+  --report "$OUTPUT/recovery_report.json"
+```
 
 ## 7. 相关文档
 

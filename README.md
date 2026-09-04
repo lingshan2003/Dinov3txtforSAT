@@ -135,6 +135,8 @@ bash scripts/run_web_500step_formal_schedule_pilot.sh
 
 验收条件是：全量 validation 曲线至少出现低于 step 0 的点，`best.pt` 指向这一全局最优候选；否则停止并调整受限配置，不延长至 5,000 step。
 
+在该脚本产生 `verification_report.json` 前，保留 `step_0000000.pt`、`step_0000250.pt`、`step_0000500.pt` 和 `best.pt`。`best.pt` 只能代表它自身 payload 所属的 step，不能代替已经删除的不同 step checkpoint。若发生误删，运行 `tools/inspect_training_artifacts.py` 生成 `recovery_report.json`，先据此判断是否仍能恢复某个同 step 的副本，以及 resume 证据是否已降级。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构
