@@ -185,8 +185,11 @@ def test_validation_best_checkpoint_and_strict_resume(tmp_path) -> None:
     assert summary["resumed_from"] == str(checkpoint.resolve())
     assert summary["validation"]["evaluations"] == 3
     assert summary["validation"]["best_checkpoint"] == str(output_dir / "best.pt")
+    assert summary["validation"]["selection_includes_step_zero"]
     assert (output_dir / "best.pt").is_file()
+    assert (output_dir / "step_0000000.pt").is_file()
     assert [record["step"] for record in validation] == [0, 1, 2]
+    assert summary["validation"]["best_loss"] == min(record["loss"] for record in validation)
     assert [record["step"] for record in _read_jsonl(output_dir / "metrics.jsonl")] == [1, 2]
     assert resume_history[0]["checkpoint_step"] == 1
     assert isinstance(resume_history[0]["checkpoint_sha256"], str)

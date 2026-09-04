@@ -62,3 +62,13 @@ def test_load_validation_resume_configs() -> None:
     assert web.data.num_workers == sat.data.num_workers == 0
     assert web.train.validation_every == sat.train.validation_every == 50
     assert web.train.validation_at_start and sat.train.validation_at_start
+
+
+def test_load_formal_schedule_500_step_pilot_config() -> None:
+    config = load_config(Path("configs/pilot_web_500step_formal_schedule.toml"))
+    assert config.experiment.name == "m3_web_global77_formalschedule_500step_pilot_seed11"
+    assert config.data.num_workers == 0
+    assert config.train.max_steps == 5000
+    assert config.train.warmup_steps == 250
+    assert config.train.validation_every == 50
+    assert config.train.checkpoint_every == 250

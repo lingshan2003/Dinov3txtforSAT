@@ -113,7 +113,7 @@ bash scripts/run_web_100step_fixed_monitor.sh
 
 该脚本使用新的输出目录，重新生成并校验监测 manifest，随后验证固定监测曲线、训练曲线、资产身份与 step 50/100 checkpoint。报告以固定监测 loss 的首 3 个点（step 0/10/20）与末 3 个点（step 80/90/100）均值判断趋势。
 
-固定监测通过后，先执行新的 Web 验证 / best / resume 门槛；它以全量、不增强且不使用 queue 的 validation loss 选取 `best.pt`，故不会把 test 集参与选模。脚本会在 step 50 正常结束，随后以相同 TOML 从该 checkpoint 恢复至 step 100；恢复前严格比对配置、项目与 DINOv3 commit、权重、tokenizer、train/val/fixed-monitor manifest 的 SHA-256。
+固定监测通过后，先执行新的 Web 验证 / best / resume 门槛；它以全量、不增强且不使用 queue 的 validation loss 在初始模型（step 0）和每个验证 step 中选取 `best.pt`，故不会把 test 集参与选模。脚本会在 step 50 正常结束，随后以相同 TOML 从该 checkpoint 恢复至 step 100；恢复前严格比对配置、项目与 DINOv3 commit、权重、tokenizer、train/val/fixed-monitor manifest 的 SHA-256。
 
 ```bash
 bash scripts/run_web_100step_validation_resume.sh
@@ -126,6 +126,14 @@ bash scripts/run_web_100step_validation_resume.sh
 ```bash
 bash scripts/run_sat_100step_validation_resume.sh
 ```
+
+若 100-step 的 validation 没有低于 step 0，不得直接启动正式 5,000-step。先运行 Web 的 500-step 受限 pilot：它采用未来正式训练的 `max_steps = 5000`、`warmup_steps = 250` 和 cosine schedule，却由命令行在 step 500 截止，并在 step 250 做严格恢复。因此它检查的是正式调度的前 500 step，不是新的 500-step 调度实验或正式训练。
+
+```bash
+bash scripts/run_web_500step_formal_schedule_pilot.sh
+```
+
+验收条件是：全量 validation 曲线至少出现低于 step 0 的点，`best.pt` 指向这一全局最优候选；否则停止并调整受限配置，不延长至 5,000 step。
 
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 

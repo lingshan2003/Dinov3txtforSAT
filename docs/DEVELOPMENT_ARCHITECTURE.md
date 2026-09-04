@@ -170,7 +170,7 @@ SAT 实验加载通用 dino.txt vision head/text encoder 后替换 SAT backbone�
 3. 记录 seed、torch/CUDA/GPU、DINOv3 commit、权重 hash、manifest hash；
 4. checkpoint 采用先写 `.part` 再原子替换；
 5. checkpoint 只保存 trainable state，不重复保存冻结权重；但必须同时保存 optimizer、scheduler、scaler、queue、已消费 sampler 位置、DataLoader generator 与 RNG 状态、step、配置和运行身份；
-6. validation 必须使用完整固定 manifest、无增强、`model.eval()`、无 queue；`best.pt` 只能由 validation loss 选择，test 集不得参与选模；
+6. validation 必须使用完整固定 manifest、无增强、`model.eval()`、无 queue；`best.pt` 必须在 step 0 初始模型和所有 validation step 中按 validation loss 全局选择，test 集不得参与选模；
 7. 训练中断后不得从“看起来相近”的配置恢复；恢复前必须严格验证配置文本 hash、项目/DINOv3 commit 与所有上游权重、tokenizer、manifest hash；
 8. `num_workers = 0` 的恢复必须重现 sampler/RNG 状态；多 worker 运行可恢复训练状态但不得声称跨进程的随机增强逐样本 bitwise 相同，除非另行保存 worker RNG 状态；
 9. NaN/Inf、空 batch、图像读取失败必须立即失败并指出 sample id；

@@ -18,7 +18,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-train-manifest-sha256", required=True)
     parser.add_argument("--expected-dinov3-commit")
     parser.add_argument("--expected-final-queue-size", type=int)
+    parser.add_argument("--expected-target-steps", type=int)
     parser.add_argument("--require-completed", action="store_true")
+    parser.add_argument("--require-incomplete", action="store_true")
     parser.add_argument("--required-checkpoint-step", action="append", type=int, default=[])
     parser.add_argument("--require-in-batch-loss", action="store_true")
     parser.add_argument("--require-fixed-monitor", action="store_true")
@@ -85,7 +87,9 @@ def verify_training_run(
     expected_train_manifest_sha256: str,
     expected_dinov3_commit: str | None = None,
     expected_final_queue_size: int | None = None,
+    expected_target_steps: int | None = None,
     require_completed: bool = False,
+    require_incomplete: bool = False,
     required_checkpoint_steps: tuple[int, ...] = (),
     require_in_batch_loss: bool = False,
     require_fixed_monitor: bool = False,
@@ -99,6 +103,10 @@ def verify_training_run(
 ) -> dict[str, Any]:
     if expected_steps <= 0:
         raise ValueError("expected_steps must be positive")
+    if expected_target_steps is not None and expected_target_steps < expected_steps:
+        raise ValueError("expected_target_steps must be at least expected_steps")
+    if require_completed and require_incomplete:
+        raise ValueError("A run cannot be required to be both completed and incomplete")
     if require_fixed_monitor and (
         expected_fixed_monitor_manifest_sha256 is None or fixed_monitor_every is None
     ):
@@ -158,8 +166,15 @@ def verify_training_run(
     summary = _read_json(summary_path)
     if summary.get("steps") != expected_steps:
         raise ValueError(f"Summary steps must be {expected_steps}, got {summary.get('steps')!r}")
+    if expected_target_steps is not None and summary.get("target_steps") != expected_target_steps:
+        raise ValueError(
+            "Summary target_steps must be "
+            f"{expected_target_steps}, got {summary.get('target_steps')!r}"
+        )
     if require_completed and summary.get("completed") is not True:
         raise ValueError("Summary must mark this run as completed")
+    if require_incomplete and summary.get("completed") is not False:
+        raise ValueError("Summary must mark this run as intentionally incomplete")
     for field in ("all_losses_finite", "all_gradients_finite"):
         if summary.get(field) is not True:
             raise ValueError(f"Summary field {field} must be true")
@@ -236,8 +251,8 @@ def verify_training_run(
         raise FileNotFoundError(f"Final checkpoint is missing or empty: {checkpoint}")
     required_checkpoints: list[str] = []
     for step in required_checkpoint_steps:
-        if step <= 0:
-            raise ValueError(f"Required checkpoint step must be positive, got {step}")
+        if step < 0:
+            raise ValueError(f"Required checkpoint step must be nonnegative, got {step}")
         checkpoint_path = output_dir / f"step_{step:07d}.pt"
         if not checkpoint_path.is_file() or checkpoint_path.stat().st_size == 0:
             raise FileNotFoundError(f"Required checkpoint is missing or empty: {checkpoint_path}")
@@ -248,16 +263,15 @@ def verify_training_run(
         validation_summary = summary["validation"]
         best_step = validation_summary.get("best_step")
         best_loss = _finite(validation_summary.get("best_loss"), "summary validation best_loss")
-        if not isinstance(best_step, int) or best_step <= 0:
-            raise ValueError("Summary validation best_step must be a positive int")
-        post_training_losses = {
+        if not isinstance(best_step, int) or best_step < 0:
+            raise ValueError("Summary validation best_step must be a nonnegative int")
+        candidate_losses = {
             record["step"]: loss
             for record, loss in zip(validation_records, validation_losses, strict=True)
-            if record["step"] > 0
         }
-        if best_step not in post_training_losses:
+        if best_step not in candidate_losses:
             raise ValueError("Best validation step is not a completed validation step")
-        expected_best_loss = min(post_training_losses.values())
+        expected_best_loss = min(candidate_losses.values())
         if not math.isclose(best_loss, expected_best_loss, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError(
                 "Best validation loss is not the minimum post-training validation loss"
@@ -268,6 +282,9 @@ def verify_training_run(
             best_checkpoint = Path.cwd() / best_checkpoint
         if not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0:
             raise FileNotFoundError(f"Best checkpoint is missing or empty: {best_checkpoint}")
+        best_source = output_dir / f"step_{best_step:07d}.pt"
+        if not best_source.is_file() or best_source.stat().st_size == 0:
+            raise FileNotFoundError(f"Best checkpoint source is missing or empty: {best_source}")
 
     resume_history: list[dict[str, Any]] = []
     if required_resume_steps:
@@ -372,7 +389,9 @@ def main() -> None:
         expected_train_manifest_sha256=args.expected_train_manifest_sha256,
         expected_dinov3_commit=args.expected_dinov3_commit,
         expected_final_queue_size=args.expected_final_queue_size,
+        expected_target_steps=args.expected_target_steps,
         require_completed=args.require_completed,
+        require_incomplete=args.require_incomplete,
         required_checkpoint_steps=tuple(args.required_checkpoint_step),
         require_in_batch_loss=args.require_in_batch_loss,
         require_fixed_monitor=args.require_fixed_monitor,

@@ -164,7 +164,7 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
 
 ## 5. 已完成的本地与服务器验证
 
-- 本地使用 `uv` 创建的 `.venv` 仅用于测试，不提交；当前已通过 `ruff check .`、`compileall`、`pytest`（20 passed）。
+- 本地使用 `uv` 创建的 `.venv` 仅用于测试，不提交；当前已通过 `ruff check .`、`compileall`、`pytest`（21 passed）。
 - 服务器已通过 `ruff check .`、测试、模型 synthetic smoke、真实 DataLoader smoke，以及上述 Web/SAT 的真实批次前向。
 - 35 train/val/test 清洗后已完成 manifest 审计：无重复 ID、无缺图、无空 caption，且三对 split 均为零 ID/内容哈希交集。
 
@@ -192,22 +192,19 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
    ```
 
    训练继续使用完整 9,969 条 `global77` 清单、随机裁剪、shuffle、`gradient_accumulation = 4` 和 `queue_size = 4096`。固定的 16 条 `global77` 样本仅在 step 0、10、…、100 时以 `model.eval()` 和无增强预处理计算不含 queue 的 loss。脚本会重新生成并 hash 校验此监测 manifest，且核验 `metrics.jsonl`、fixed-monitor 曲线、provenance、step 50/100 checkpoint 与原子写入结果。以 `verification_report.json` 的 `fixed_monitor_loss.mean_first_window` 与 `mean_last_window` 判断趋势；该字段的 `window_size` 为 3，分别比较 step 0/10/20 与 step 80/90/100。
-4. 固定监测 loss 已具可解释下降趋势。下一次服务器运行必须执行新的 Web 受限验证 / best / resume 脚本，而非 5,000-step 正式训练：
+4. Web 与 SAT 的 100-step validation / best / resume 已完成，且工程门槛通过：两者均完整运行、queue 到 4,096、step 50→100 resume 与资产身份均通过。然而，Web validation loss 从 3.8231（step 0）变为 4.0567（step 100），SAT 从 3.8224 变为 4.5138；两者都仍劣于初始模型。此前实现只在 post-training step 选择 `best.pt`，故报告的 step 100 不是含 baseline 的全局最佳。该选择逻辑现已修正：训练会保存 `step_0000000.pt`，并让 `best.pt` 在 step 0 和全部 validation step 中全局选择。
+
+5. 下一次服务器运行不是正式 5,000-step，而是 Web 500-step 的正式调度受限 pilot：
 
    ```bash
-   bash scripts/run_web_100step_validation_resume.sh
+   bash scripts/run_web_500step_formal_schedule_pilot.sh
    ```
 
-   该脚本训练 100 step，但刻意在 step 50 正常保存并退出，再从 `step_0000050.pt` 恢复到 step 100。它保留同一不可变 TOML，并在恢复前比较配置文本、项目/DINOv3 commit、backbone、dino.txt、BPE 和全部 manifest 的 SHA-256。训练状态包含 trainable 参数、optimizer、scheduler、scaler、queue、sampler 和 RNG；`num_workers = 0` 是为了让这次恢复验证连数据顺序与随机增强都可精确复现。全量 validation 在 step 0/50/100 对全部 16,277 条样本以固定 batch、无增强、无 queue 的 in-batch InfoNCE 按样本加权平均写入 `validation.jsonl`，仅由 post-training validation loss 原子更新 `best.pt`。验收 `verification_report.json` 中 validation、best checkpoint 和 resume history 三部分。
-5. 仅当第 4 步报告通过后，运行等价的 SAT 受限验证：
+   配置的 `max_steps = 5000`、`warmup_steps = 250` 与未来正式训练一致，但脚本仅运行至 step 500，并在 step 250 保存、重启、严格恢复到 step 500。全量 validation 在 step 0、50、…、500 以固定 batch、无增强、无 queue 的 in-batch InfoNCE 按样本加权平均写入 `validation.jsonl`；`best.pt` 可以合法地指向 `step_0000000.pt`。报告必须确认 `target_steps = 5000`、`completed = false`、step 0/250/500 checkpoint、step 250 resume 和全局 best 选择。若 validation 从未低于 step 0，停止并调整受限配置，**不得**继续到 5,000。
 
-   ```bash
-   bash scripts/run_sat_100step_validation_resume.sh
-   ```
-
-   该脚本会首先重新核验第 4 步 Web 输出，不允许仅凭文件存在绕过门槛。SAT 的正确命名仍为 `SAT backbone + generic dino.txt initialization + RS tuning`。
-6. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
-7. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
+6. 只有第 5 步 Web pilot 出现优于 step 0 的 validation，才以同一受限协议为 SAT 编写/运行 500-step pilot；若 SAT 仍不改善，则把它作为 generic dino.txt initialization 的 domain-mismatch 诊断，而不是正式对照。
+7. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
+8. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
 
 正式实验前需要留存的证据包括：配置快照、代码 commit、每个 manifest 的 SHA-256、随机种子、硬件/软件环境、训练/验证曲线、最佳 checkpoint、恢复训练结果以及 EuroSAT/RSICD 指标。
 

@@ -500,6 +500,17 @@ def train(
             config_text=config_text,
         )
 
+    if resume is None and validation is not None and initial_validation_loss is not None:
+        # The unmodified official initialization is a valid model-selection
+        # candidate.  Without it, a run that harms validation could still label
+        # its least harmful training step as "best".
+        best_validation_loss = initial_validation_loss
+        best_validation_step = 0
+        best_checkpoint = output_dir / "best.pt"
+        initial_checkpoint = save_current_checkpoint()
+        best_checkpoint = save_best_checkpoint(output_dir, initial_checkpoint)
+        print(f"checkpoint={initial_checkpoint} best_checkpoint={best_checkpoint}", flush=True)
+
     start = time.monotonic()
     while global_step < target_steps:
         for batch in loader:
@@ -680,6 +691,7 @@ def train(
             "best_loss": best_validation_loss,
             "best_step": best_validation_step,
             "best_checkpoint": None if best_checkpoint is None else str(best_checkpoint),
+            "selection_includes_step_zero": config.train.validation_at_start,
             "all_losses_finite": True,
         }
     summary_path = _write_json_atomic(output_dir / "training_summary.json", summary)
