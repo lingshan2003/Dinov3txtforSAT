@@ -18,11 +18,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-train-manifest-sha256", required=True)
     parser.add_argument("--expected-dinov3-commit")
     parser.add_argument("--expected-final-queue-size", type=int)
+    parser.add_argument("--require-completed", action="store_true")
     parser.add_argument("--required-checkpoint-step", action="append", type=int, default=[])
     parser.add_argument("--require-in-batch-loss", action="store_true")
     parser.add_argument("--require-fixed-monitor", action="store_true")
     parser.add_argument("--expected-fixed-monitor-manifest-sha256")
     parser.add_argument("--fixed-monitor-every", type=int)
+    parser.add_argument("--require-validation", action="store_true")
+    parser.add_argument("--expected-val-manifest-sha256")
+    parser.add_argument("--validation-every", type=int)
+    parser.add_argument("--require-best-checkpoint", action="store_true")
+    parser.add_argument("--required-resume-step", action="append", type=int, default=[])
     return parser.parse_args()
 
 
@@ -79,11 +85,17 @@ def verify_training_run(
     expected_train_manifest_sha256: str,
     expected_dinov3_commit: str | None = None,
     expected_final_queue_size: int | None = None,
+    require_completed: bool = False,
     required_checkpoint_steps: tuple[int, ...] = (),
     require_in_batch_loss: bool = False,
     require_fixed_monitor: bool = False,
     expected_fixed_monitor_manifest_sha256: str | None = None,
     fixed_monitor_every: int | None = None,
+    require_validation: bool = False,
+    expected_val_manifest_sha256: str | None = None,
+    validation_every: int | None = None,
+    require_best_checkpoint: bool = False,
+    required_resume_steps: tuple[int, ...] = (),
 ) -> dict[str, Any]:
     if expected_steps <= 0:
         raise ValueError("expected_steps must be positive")
@@ -95,6 +107,12 @@ def verify_training_run(
         )
     if fixed_monitor_every is not None and fixed_monitor_every <= 0:
         raise ValueError("fixed_monitor_every must be positive")
+    if require_validation and (expected_val_manifest_sha256 is None or validation_every is None):
+        raise ValueError("Required validation needs its expected manifest SHA-256 and interval")
+    if validation_every is not None and validation_every <= 0:
+        raise ValueError("validation_every must be positive")
+    if require_best_checkpoint and not require_validation:
+        raise ValueError("A best checkpoint can only be verified with validation")
     output_dir = output_dir.resolve()
     metrics_path = output_dir / "metrics.jsonl"
     summary_path = output_dir / "training_summary.json"
@@ -140,6 +158,8 @@ def verify_training_run(
     summary = _read_json(summary_path)
     if summary.get("steps") != expected_steps:
         raise ValueError(f"Summary steps must be {expected_steps}, got {summary.get('steps')!r}")
+    if require_completed and summary.get("completed") is not True:
+        raise ValueError("Summary must mark this run as completed")
     for field in ("all_losses_finite", "all_gradients_finite"):
         if summary.get(field) is not True:
             raise ValueError(f"Summary field {field} must be true")
@@ -174,6 +194,41 @@ def verify_training_run(
             )
         for field in ("initial_loss", "final_loss"):
             _finite(fixed_monitor_summary.get(field), f"summary fixed_monitor {field}")
+    validation_losses: list[float] = []
+    validation_records: list[dict[str, Any]] = []
+    if require_validation:
+        validation_path = output_dir / "validation.jsonl"
+        if not validation_path.is_file():
+            raise FileNotFoundError(f"Missing validation metrics: {validation_path}")
+        validation_records = _read_metrics(validation_path)
+        expected_validation_steps = list(range(0, expected_steps + 1, validation_every))
+        validation_steps = [record.get("step") for record in validation_records]
+        if validation_steps != expected_validation_steps:
+            raise ValueError(
+                "Unexpected validation steps: "
+                f"expected {expected_validation_steps}, got {validation_steps}"
+            )
+        for step, record in zip(validation_steps, validation_records, strict=True):
+            validation_losses.append(_finite(record.get("loss"), f"validation step {step} loss"))
+            _finite(record.get("logit_scale"), f"validation step {step} logit_scale")
+            samples = record.get("samples")
+            batches = record.get("batches")
+            if not isinstance(samples, int) or samples <= 0:
+                raise ValueError(f"validation step {step} samples must be a positive int")
+            if not isinstance(batches, int) or batches <= 0:
+                raise ValueError(f"validation step {step} batches must be a positive int")
+        validation_summary = summary.get("validation")
+        if not isinstance(validation_summary, dict):
+            raise ValueError("Summary has no validation section")
+        if validation_summary.get("every") != validation_every:
+            raise ValueError(
+                "Unexpected validation interval: "
+                f"expected {validation_every}, got {validation_summary.get('every')!r}"
+            )
+        if validation_summary.get("evaluations") != len(validation_records):
+            raise ValueError("Summary validation evaluation count does not match validation.jsonl")
+        for field in ("initial_loss", "final_loss"):
+            _finite(validation_summary.get(field), f"summary validation {field}")
     checkpoint = Path(str(summary.get("final_checkpoint", "")))
     if not checkpoint.is_absolute():
         checkpoint = Path.cwd() / checkpoint
@@ -187,6 +242,52 @@ def verify_training_run(
         if not checkpoint_path.is_file() or checkpoint_path.stat().st_size == 0:
             raise FileNotFoundError(f"Required checkpoint is missing or empty: {checkpoint_path}")
         required_checkpoints.append(str(checkpoint_path))
+
+    best_checkpoint: Path | None = None
+    if require_best_checkpoint:
+        validation_summary = summary["validation"]
+        best_step = validation_summary.get("best_step")
+        best_loss = _finite(validation_summary.get("best_loss"), "summary validation best_loss")
+        if not isinstance(best_step, int) or best_step <= 0:
+            raise ValueError("Summary validation best_step must be a positive int")
+        post_training_losses = {
+            record["step"]: loss
+            for record, loss in zip(validation_records, validation_losses, strict=True)
+            if record["step"] > 0
+        }
+        if best_step not in post_training_losses:
+            raise ValueError("Best validation step is not a completed validation step")
+        expected_best_loss = min(post_training_losses.values())
+        if not math.isclose(best_loss, expected_best_loss, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError(
+                "Best validation loss is not the minimum post-training validation loss"
+            )
+        best_value = validation_summary.get("best_checkpoint")
+        best_checkpoint = Path(str(best_value))
+        if not best_checkpoint.is_absolute():
+            best_checkpoint = Path.cwd() / best_checkpoint
+        if not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0:
+            raise FileNotFoundError(f"Best checkpoint is missing or empty: {best_checkpoint}")
+
+    resume_history: list[dict[str, Any]] = []
+    if required_resume_steps:
+        resume_history_path = output_dir / "resume_history.jsonl"
+        if not resume_history_path.is_file():
+            raise FileNotFoundError(f"Missing resume history: {resume_history_path}")
+        resume_history = _read_metrics(resume_history_path)
+        observed_resume_steps = [record.get("checkpoint_step") for record in resume_history]
+        for step in required_resume_steps:
+            if step <= 0:
+                raise ValueError(f"Required resume step must be positive, got {step}")
+            if step not in observed_resume_steps:
+                raise ValueError(
+                    f"Required resume from step {step} was not recorded: {observed_resume_steps}"
+                )
+        for record in resume_history:
+            if not isinstance(record.get("checkpoint_sha256"), str):
+                raise ValueError("Resume history has no checkpoint SHA-256")
+            if not isinstance(record.get("run_identity"), dict):
+                raise ValueError("Resume history has no verified run identity")
 
     provenance = _read_json(provenance_path)
     observed_sha = provenance.get("files", {}).get("train_manifest", {}).get("sha256")
@@ -204,6 +305,14 @@ def verify_training_run(
                 "Unexpected fixed monitor manifest SHA-256: "
                 f"expected {expected_fixed_monitor_manifest_sha256}, "
                 f"got {observed_fixed_monitor_sha!r}"
+            )
+    observed_val_sha: str | None = None
+    if require_validation:
+        observed_val_sha = provenance.get("files", {}).get("val_manifest", {}).get("sha256")
+        if observed_val_sha != expected_val_manifest_sha256:
+            raise ValueError(
+                "Unexpected validation manifest SHA-256: "
+                f"expected {expected_val_manifest_sha256}, got {observed_val_sha!r}"
             )
     if expected_dinov3_commit is not None:
         observed_dinov3_commit = provenance.get("dinov3_commit")
@@ -227,6 +336,7 @@ def verify_training_run(
     report: dict[str, Any] = {
         "output_dir": str(output_dir),
         "steps": expected_steps,
+        "completed": summary.get("completed"),
         "loss": _series_summary(losses),
         "gradient_norm": _series_summary(gradient_norms),
         "peak_cuda_allocated_bytes": max(peak_bytes),
@@ -243,6 +353,14 @@ def verify_training_run(
         report["fixed_monitor_loss"] = _series_summary(
             fixed_monitor_losses, preferred_window_size=3
         )
+    if require_validation:
+        report["validation_loss"] = _series_summary(validation_losses, preferred_window_size=2)
+        report["val_manifest_sha256"] = observed_val_sha
+    if best_checkpoint is not None:
+        report["best_checkpoint"] = str(best_checkpoint)
+        report["best_validation_step"] = summary["validation"]["best_step"]
+    if required_resume_steps:
+        report["resume_history"] = resume_history
     return report
 
 
@@ -254,11 +372,17 @@ def main() -> None:
         expected_train_manifest_sha256=args.expected_train_manifest_sha256,
         expected_dinov3_commit=args.expected_dinov3_commit,
         expected_final_queue_size=args.expected_final_queue_size,
+        require_completed=args.require_completed,
         required_checkpoint_steps=tuple(args.required_checkpoint_step),
         require_in_batch_loss=args.require_in_batch_loss,
         require_fixed_monitor=args.require_fixed_monitor,
         expected_fixed_monitor_manifest_sha256=args.expected_fixed_monitor_manifest_sha256,
         fixed_monitor_every=args.fixed_monitor_every,
+        require_validation=args.require_validation,
+        expected_val_manifest_sha256=args.expected_val_manifest_sha256,
+        validation_every=args.validation_every,
+        require_best_checkpoint=args.require_best_checkpoint,
+        required_resume_steps=tuple(args.required_resume_step),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

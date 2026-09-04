@@ -51,3 +51,14 @@ def test_load_web_fixed_monitor_config() -> None:
     assert config.data.fixed_monitor_manifest.name.endswith("fixed16.jsonl")
     assert config.data.fixed_monitor_batch_size == 16
     assert config.train.fixed_monitor_every == 10
+
+
+def test_load_validation_resume_configs() -> None:
+    web = load_config(Path("configs/verify_web_100step_validation_resume.toml"))
+    sat = load_config(Path("configs/verify_sat_100step_validation_resume.toml"))
+    assert web.model.backbone_domain == "web"
+    assert sat.model.backbone_domain == "sat"
+    assert web.data.validation_batch_size == sat.data.validation_batch_size == 16
+    assert web.data.num_workers == sat.data.num_workers == 0
+    assert web.train.validation_every == sat.train.validation_every == 50
+    assert web.train.validation_at_start and sat.train.validation_at_start

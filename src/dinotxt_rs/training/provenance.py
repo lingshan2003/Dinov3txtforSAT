@@ -5,6 +5,7 @@ import json
 import platform
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -29,7 +30,11 @@ def git_commit(repo: Path) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def write_provenance(config: Config) -> Path:
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def build_provenance(config: Config) -> dict[str, Any]:
     files = {
         "config": config.source,
         "backbone_weights": config.model.backbone_weights,
@@ -41,7 +46,7 @@ def write_provenance(config: Config) -> Path:
         files["val_manifest"] = config.data.val_manifest
     if config.data.fixed_monitor_manifest is not None:
         files["fixed_monitor_manifest"] = config.data.fixed_monitor_manifest
-    payload = {
+    return {
         "project_commit": git_commit(config.source.parent),
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -55,6 +60,37 @@ def write_provenance(config: Config) -> Path:
             for name, path in files.items()
         },
     }
+
+
+def run_identity(config_text: str, provenance: dict[str, Any]) -> dict[str, Any]:
+    """Fields that must be identical before a checkpoint can be resumed.
+
+    Paths are deliberately excluded: moving a fully verified project tree must
+    not invalidate a run, whereas any input content or source revision change
+    must.
+    """
+    files = provenance.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("Provenance files are invalid")
+    file_hashes = {
+        name: record["sha256"]
+        for name, record in files.items()
+        if isinstance(record, dict) and isinstance(record.get("sha256"), str)
+    }
+    if len(file_hashes) != len(files):
+        raise ValueError("Provenance file hashes are invalid")
+    return {
+        "format_version": 1,
+        "config_sha256": sha256_text(config_text),
+        "project_commit": provenance.get("project_commit"),
+        "dinov3_commit": provenance.get("dinov3_commit"),
+        "files": file_hashes,
+    }
+
+
+def write_provenance(config: Config, payload: dict[str, Any] | None = None) -> Path:
+    if payload is None:
+        payload = build_provenance(config)
     config.experiment.output_dir.mkdir(parents=True, exist_ok=True)
     destination = config.experiment.output_dir / "provenance.json"
     destination.write_text(

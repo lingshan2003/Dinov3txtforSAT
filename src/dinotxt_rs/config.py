@@ -32,6 +32,7 @@ class ModelConfig:
 class DataConfig:
     train_manifest: Path
     val_manifest: Path | None = None
+    validation_batch_size: int | None = None
     num_workers: int = 8
     train_augmentation: bool = True
     shuffle_train: bool = True
@@ -52,6 +53,8 @@ class TrainConfig:
     max_grad_norm: float = 1.0
     queue_size: int = 0
     fixed_monitor_every: int = 0
+    validation_every: int = 0
+    validation_at_start: bool = True
     log_every: int = 10
     checkpoint_every: int = 500
 
@@ -107,6 +110,11 @@ def load_config(path: str | Path) -> Config:
         data=DataConfig(
             train_manifest=Path(data["train_manifest"]),
             val_manifest=_path(data.get("val_manifest")),
+            validation_batch_size=(
+                None
+                if data.get("validation_batch_size") is None
+                else int(data["validation_batch_size"])
+            ),
             num_workers=int(data.get("num_workers", 8)),
             train_augmentation=bool(data.get("train_augmentation", True)),
             shuffle_train=bool(data.get("shuffle_train", True)),
@@ -129,6 +137,8 @@ def load_config(path: str | Path) -> Config:
             max_grad_norm=float(train.get("max_grad_norm", 1.0)),
             queue_size=int(train.get("queue_size", 0)),
             fixed_monitor_every=int(train.get("fixed_monitor_every", 0)),
+            validation_every=int(train.get("validation_every", 0)),
+            validation_at_start=bool(train.get("validation_at_start", True)),
             log_every=int(train.get("log_every", 10)),
             checkpoint_every=int(train.get("checkpoint_every", 500)),
         ),
@@ -171,6 +181,18 @@ def validate_config(config: Config) -> None:
             )
     elif config.train.fixed_monitor_every:
         raise ValueError("train.fixed_monitor_every requires data.fixed_monitor_manifest")
+    has_validation = config.data.val_manifest is not None
+    if config.train.validation_every:
+        if config.train.validation_every <= 0:
+            raise ValueError("train.validation_every must be positive")
+        if not has_validation:
+            raise ValueError("train.validation_every requires data.val_manifest")
+        if config.data.validation_batch_size is None:
+            raise ValueError("train.validation_every requires data.validation_batch_size")
+        if config.data.validation_batch_size <= 0:
+            raise ValueError("data.validation_batch_size must be positive")
+    elif config.data.validation_batch_size is not None:
+        raise ValueError("data.validation_batch_size requires train.validation_every")
     if config.train.warmup_steps >= config.train.max_steps:
         raise ValueError("train.warmup_steps must be smaller than train.max_steps")
 
@@ -185,4 +207,8 @@ def required_paths(config: Config) -> list[Path]:
     ]
     if config.data.fixed_monitor_manifest is not None:
         paths.append(config.data.fixed_monitor_manifest)
+    if config.train.validation_every:
+        if config.data.val_manifest is None:  # Defensive guard for callers bypassing validation.
+            raise ValueError("train.validation_every requires data.val_manifest")
+        paths.append(config.data.val_manifest)
     return paths

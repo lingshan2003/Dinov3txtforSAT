@@ -36,6 +36,36 @@ class EmbeddingQueue:
         self.images = new_images[-self.capacity :]
         self.texts = new_texts[-self.capacity :]
 
+    def state_dict(self) -> dict[str, torch.Tensor | int | None]:
+        return {
+            "capacity": self.capacity,
+            "images": None if self.images is None else self.images.detach().cpu(),
+            "texts": None if self.texts is None else self.texts.detach().cpu(),
+        }
+
+    def load_state_dict(
+        self, state: dict[str, torch.Tensor | int | None], device: torch.device
+    ) -> None:
+        if state.get("capacity") != self.capacity:
+            raise ValueError(
+                "Checkpoint queue capacity="
+                f"{state.get('capacity')!r} does not match {self.capacity}"
+            )
+        images = state.get("images")
+        texts = state.get("texts")
+        if images is None and texts is None:
+            self.images = None
+            self.texts = None
+            return
+        if not isinstance(images, torch.Tensor) or not isinstance(texts, torch.Tensor):
+            raise ValueError("Checkpoint queue embeddings are invalid")
+        if images.ndim != 2 or texts.ndim != 2 or images.shape != texts.shape:
+            raise ValueError("Checkpoint queue embedding shapes are invalid")
+        if not 0 < images.shape[0] <= self.capacity:
+            raise ValueError("Checkpoint queue length is invalid")
+        self.images = images.to(device=device)
+        self.texts = texts.to(device=device)
+
 
 def symmetric_contrastive_loss(
     image_features: torch.Tensor,

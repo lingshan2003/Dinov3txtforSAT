@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -119,3 +120,85 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
     assert all(record["loss"] >= 0 for record in fixed_monitor)
     assert model.training
     assert not model.visual_model.backbone.training
+
+
+def test_validation_best_checkpoint_and_strict_resume(tmp_path) -> None:
+    image_paths = []
+    for index, color in enumerate(((20, 40, 60), (80, 100, 120), (130, 140, 150), (30, 80, 90))):
+        image_path = tmp_path / f"image-{index}.png"
+        Image.new("RGB", (8, 8), color=color).save(image_path)
+        image_paths.append(image_path)
+    manifest = tmp_path / "train.jsonl"
+    _write_manifest(manifest, image_paths)
+    for name in ("backbone.pth", "dinotxt.pth", "vocab.gz"):
+        (tmp_path / name).write_bytes(b"test")
+    source = tmp_path / "config.toml"
+    source_text = "[experiment]\nname = 'resume-test'\n"
+    source.write_text(source_text, encoding="utf-8")
+    output_dir = tmp_path / "outputs"
+    config = Config(
+        experiment=ExperimentConfig(name="resume-test", seed=11, output_dir=output_dir),
+        model=ModelConfig(
+            dinov3_repo=tmp_path,
+            backbone_domain="web",
+            backbone_weights=tmp_path / "backbone.pth",
+            dinotxt_weights=tmp_path / "dinotxt.pth",
+            bpe_vocab=tmp_path / "vocab.gz",
+            image_size=16,
+        ),
+        data=DataConfig(
+            train_manifest=manifest,
+            val_manifest=manifest,
+            validation_batch_size=2,
+            num_workers=0,
+            train_augmentation=False,
+            shuffle_train=True,
+        ),
+        train=TrainConfig(
+            device="cpu",
+            precision="fp32",
+            batch_size=2,
+            gradient_accumulation=1,
+            max_steps=2,
+            warmup_steps=0,
+            queue_size=2,
+            validation_every=1,
+            log_every=1,
+            checkpoint_every=1,
+        ),
+        source=source,
+    )
+
+    train(config, TinyModel(), TinyTokenizer(), stop_after_step=1)
+    checkpoint = output_dir / "step_0000001.pt"
+    assert checkpoint.is_file()
+    summary_path = train(config, TinyModel(), TinyTokenizer(), resume=checkpoint)
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    validation = [
+        json.loads(line) for line in (output_dir / "validation.jsonl").read_text().splitlines()
+    ]
+    resume_history = [
+        json.loads(line) for line in (output_dir / "resume_history.jsonl").read_text().splitlines()
+    ]
+    assert summary["completed"]
+    assert summary["resumed_from"] == str(checkpoint.resolve())
+    assert summary["validation"]["evaluations"] == 3
+    assert summary["validation"]["best_checkpoint"] == str(output_dir / "best.pt")
+    assert (output_dir / "best.pt").is_file()
+    assert [record["step"] for record in validation] == [0, 1, 2]
+    assert [record["step"] for record in _read_jsonl(output_dir / "metrics.jsonl")] == [1, 2]
+    assert resume_history[0]["checkpoint_step"] == 1
+    assert isinstance(resume_history[0]["checkpoint_sha256"], str)
+
+    source.write_text("[experiment]\nname = 'changed'\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="config.toml does not exactly match"):
+        train(config, TinyModel(), TinyTokenizer(), resume=checkpoint)
+    source.write_text(source_text, encoding="utf-8")
+    (tmp_path / "backbone.pth").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="checkpoint identity differs: files"):
+        train(config, TinyModel(), TinyTokenizer(), resume=checkpoint)
+
+
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]

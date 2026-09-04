@@ -169,10 +169,12 @@ SAT 实验加载通用 dino.txt vision head/text encoder 后替换 SAT backbone�
 2. backbone 保持 `eval()`，alignment/text trainable 模块保持 `train()`；
 3. 记录 seed、torch/CUDA/GPU、DINOv3 commit、权重 hash、manifest hash；
 4. checkpoint 采用先写 `.part` 再原子替换；
-5. 默认只保存 trainable state、optimizer、scheduler、step 和配置，不重复保存冻结权重；
-6. 训练中断后不得从“看起来相近”的配置恢复；恢复时必须验证配置和上游权重 hash；
-7. NaN/Inf、空 batch、图像读取失败必须立即失败并指出 sample id；
-8. 首次长训练前依次通过 CPU 数据 smoke test、单 batch CUDA forward、10-step overfit、100-step loss trend。
+5. checkpoint 只保存 trainable state，不重复保存冻结权重；但必须同时保存 optimizer、scheduler、scaler、queue、已消费 sampler 位置、DataLoader generator 与 RNG 状态、step、配置和运行身份；
+6. validation 必须使用完整固定 manifest、无增强、`model.eval()`、无 queue；`best.pt` 只能由 validation loss 选择，test 集不得参与选模；
+7. 训练中断后不得从“看起来相近”的配置恢复；恢复前必须严格验证配置文本 hash、项目/DINOv3 commit 与所有上游权重、tokenizer、manifest hash；
+8. `num_workers = 0` 的恢复必须重现 sampler/RNG 状态；多 worker 运行可恢复训练状态但不得声称跨进程的随机增强逐样本 bitwise 相同，除非另行保存 worker RNG 状态；
+9. NaN/Inf、空 batch、图像读取失败必须立即失败并指出 sample id；
+10. 首次长训练前依次通过 CPU 数据 smoke test、单 batch CUDA forward、10-step overfit、100-step loss trend、validation/best/resume 和等价 SAT 受限验证。
 
 ## 9. 实验协议
 
@@ -237,4 +239,3 @@ dinotxt-rs-smoke --config configs/train_mvp_sat.toml
 8. `M7 RQ3`：只有前述结论稳定后才加入 local alignment。
 
 这套顺序的核心不是限制探索，而是确保每一项新增复杂度都有一个已经冻结、可比较的参照物。
-

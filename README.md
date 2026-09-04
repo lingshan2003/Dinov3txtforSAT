@@ -113,6 +113,20 @@ bash scripts/run_web_100step_fixed_monitor.sh
 
 该脚本使用新的输出目录，重新生成并校验监测 manifest，随后验证固定监测曲线、训练曲线、资产身份与 step 50/100 checkpoint。报告以固定监测 loss 的首 3 个点（step 0/10/20）与末 3 个点（step 80/90/100）均值判断趋势。
 
+固定监测通过后，先执行新的 Web 验证 / best / resume 门槛；它以全量、不增强且不使用 queue 的 validation loss 选取 `best.pt`，故不会把 test 集参与选模。脚本会在 step 50 正常结束，随后以相同 TOML 从该 checkpoint 恢复至 step 100；恢复前严格比对配置、项目与 DINOv3 commit、权重、tokenizer、train/val/fixed-monitor manifest 的 SHA-256。
+
+```bash
+bash scripts/run_web_100step_validation_resume.sh
+```
+
+验收 `validation.jsonl`（step 0/50/100）、`best.pt`、`resume_history.jsonl`、step 50/100 checkpoint 与 `verification_report.json`。验证 loss 是对全部 16,277 条样本、固定 batch 的无 queue InfoNCE 按样本加权平均；它是与训练目标同语义的确定性 validation 指标，而非 test 指标。该受限配置刻意采用 `num_workers = 0`，从而连同 sampler、queue、optimizer、scheduler 和 RNG 状态一起可精确恢复；它验证的是可靠性而非吞吐量。
+
+仅当上述 Web 脚本通过后，运行等价的 SAT 受限验证。SAT 脚本会先重新核验 Web 产物，避免越过阶段门槛。
+
+```bash
+bash scripts/run_sat_100step_validation_resume.sh
+```
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构

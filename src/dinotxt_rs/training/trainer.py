@@ -16,8 +16,14 @@ from torch.utils.data import DataLoader
 from dinotxt_rs.config import Config
 from dinotxt_rs.data import ImageTextDataset, collate_image_text, make_transform
 from dinotxt_rs.losses import EmbeddingQueue, symmetric_contrastive_loss
-from dinotxt_rs.training.checkpoint import save_checkpoint
-from dinotxt_rs.training.provenance import write_provenance
+from dinotxt_rs.training.checkpoint import load_checkpoint, save_best_checkpoint, save_checkpoint
+from dinotxt_rs.training.provenance import (
+    build_provenance,
+    run_identity,
+    sha256_file,
+    write_provenance,
+)
+from dinotxt_rs.training.sampler import ResumableBatchSampler
 
 
 def seed_everything(seed: int) -> None:
@@ -161,7 +167,104 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def train(config: Config, model: Any, tokenizer: Any) -> Path:
+def _load_validation_loader(
+    config: Config, device: torch.device
+) -> tuple[ImageTextDataset, DataLoader] | None:
+    if not config.train.validation_every:
+        return None
+    if config.data.val_manifest is None or config.data.validation_batch_size is None:
+        raise ValueError("Validation was enabled without a manifest and batch size")
+    dataset = ImageTextDataset(
+        config.data.val_manifest,
+        make_transform(config.model.image_size, config.model.backbone_domain, train=False),
+    )
+    if not len(dataset):
+        raise ValueError("Validation manifest is empty")
+    loader = DataLoader(
+        dataset,
+        batch_size=config.data.validation_batch_size,
+        shuffle=False,
+        num_workers=config.data.num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=config.data.num_workers > 0,
+        drop_last=False,
+        collate_fn=collate_image_text,
+    )
+    return dataset, loader
+
+
+def _evaluate_validation(
+    *,
+    model: Any,
+    tokenizer: Any,
+    loader: DataLoader,
+    device: torch.device,
+    precision: str,
+) -> dict[str, float | int | None]:
+    """Evaluate every validation sample with deterministic preprocessing and no queue."""
+    was_training = model.training
+    model.eval()
+    total_loss = 0.0
+    total_samples = 0
+    batches = 0
+    logit_scale_value: float | None = None
+    start = time.monotonic()
+    try:
+        with torch.inference_mode():
+            for batch in loader:
+                if not batch["ids"]:
+                    raise RuntimeError("Validation DataLoader produced an empty batch")
+                pixels = batch["pixels"].to(device, non_blocking=True)
+                tokens = tokenizer.tokenize(batch["captions"]).to(device, non_blocking=True)
+                if tokens.shape[0] != pixels.shape[0]:
+                    raise RuntimeError(
+                        "Validation tokenizer batch size does not match image batch size "
+                        "for samples: "
+                        + ", ".join(batch["ids"][:5])
+                    )
+                with _autocast(device, precision):
+                    image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
+                    loss = symmetric_contrastive_loss(
+                        image_features, text_features, logit_scale, queue=None
+                    ).loss
+                _assert_finite_loss(loss, batch["ids"])
+                batch_size = len(batch["ids"])
+                total_loss += float(loss) * batch_size
+                total_samples += batch_size
+                batches += 1
+                logit_scale_value = float(logit_scale.detach())
+    finally:
+        if was_training:
+            _set_training_mode(model)
+    if not total_samples or logit_scale_value is None:
+        raise RuntimeError("Validation completed without any samples")
+    return {
+        "loss": total_loss / total_samples,
+        "samples": total_samples,
+        "batches": batches,
+        "logit_scale": logit_scale_value,
+        "elapsed_seconds": time.monotonic() - start,
+        "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
+    }
+
+
+def train(
+    config: Config,
+    model: Any,
+    tokenizer: Any,
+    *,
+    resume: Path | None = None,
+    stop_after_step: int | None = None,
+) -> Path:
+    """Train, optionally from a strictly authenticated checkpoint.
+
+    ``stop_after_step`` is intentionally a CLI execution bound rather than a
+    configuration field.  It lets the verification script create a real,
+    resumable interruption while preserving one immutable experiment TOML.
+    """
+    if stop_after_step is not None and not 0 < stop_after_step <= config.train.max_steps:
+        raise ValueError("stop_after_step must be in [1, train.max_steps]")
+    target_steps = stop_after_step or config.train.max_steps
     seed_everything(config.experiment.seed)
     device = torch.device(config.train.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -182,16 +285,21 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
             f"Dataset has {len(dataset)} samples, fewer than batch_size={config.train.batch_size}"
         )
     fixed_monitor_batch = _load_fixed_monitor_batch(config)
+    validation = _load_validation_loader(config, device)
+    sampler = ResumableBatchSampler(
+        dataset_size=len(dataset),
+        batch_size=config.train.batch_size,
+        shuffle=config.data.shuffle_train,
+        seed=config.experiment.seed,
+    )
     loader_generator = torch.Generator()
     loader_generator.manual_seed(config.experiment.seed)
     loader = DataLoader(
         dataset,
-        batch_size=config.train.batch_size,
-        shuffle=config.data.shuffle_train,
+        batch_sampler=sampler,
         num_workers=config.data.num_workers,
         pin_memory=device.type == "cuda",
         persistent_workers=config.data.num_workers > 0,
-        drop_last=True,
         collate_fn=collate_image_text,
         generator=loader_generator,
     )
@@ -214,12 +322,37 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
     queue = EmbeddingQueue(config.train.queue_size)
     output_dir = config.experiment.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    provenance_path = write_provenance(config)
-    print(f"provenance={provenance_path}", flush=True)
+    config_text = config.source.read_text(encoding="utf-8")
+    provenance = build_provenance(config)
+    identity = run_identity(config_text, provenance)
+    config_snapshot_path = output_dir / "config.toml"
     metrics_path = output_dir / "metrics.jsonl"
     fixed_monitor_path = output_dir / "fixed_monitor.jsonl"
-    config_text = config.source.read_text(encoding="utf-8")
-    (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
+    validation_path = output_dir / "validation.jsonl"
+    resume_history_path = output_dir / "resume_history.jsonl"
+
+    if resume is None:
+        existing = [
+            path.name
+            for path in (config_snapshot_path, metrics_path, output_dir / "provenance.json")
+            if path.exists()
+        ]
+        if existing:
+            raise FileExistsError(
+                "Refusing to overwrite an existing training run without --resume: "
+                + ", ".join(existing)
+            )
+        config_snapshot_path.write_text(config_text, encoding="utf-8")
+        provenance_path = write_provenance(config, provenance)
+        print(f"provenance={provenance_path}", flush=True)
+    else:
+        if (
+            not config_snapshot_path.is_file()
+            or config_snapshot_path.read_text(encoding="utf-8") != config_text
+        ):
+            raise ValueError("Refusing to resume because output config.toml does not exactly match")
+        if not metrics_path.is_file() or not (output_dir / "provenance.json").is_file():
+            raise ValueError("Refusing to resume without existing metrics and provenance")
 
     optimizer.zero_grad(set_to_none=True)
     global_step = 0
@@ -234,22 +367,141 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
     final_in_batch_loss: float | None = None
     initial_fixed_monitor_loss: float | None = None
     final_fixed_monitor_loss: float | None = None
+    initial_validation_loss: float | None = None
+    final_validation_loss: float | None = None
+    validation_evaluations = 0
+    best_validation_loss: float | None = None
+    best_validation_step: int | None = None
+    best_checkpoint: Path | None = None
     last_gradient_norm: float | None = None
     last_checkpoint_step = 0
-    if fixed_monitor_batch is not None:
-        fixed_monitor_record = _evaluate_fixed_monitor(
+    resumed_from: Path | None = None
+
+    if resume is not None:
+        resumed_from = resume.resolve()
+        global_step, run_state = load_checkpoint(
+            resumed_from,
             model=model,
-            tokenizer=tokenizer,
-            batch=fixed_monitor_batch,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            queue=queue,
+            sampler=sampler,
+            loader_generator=loader_generator,
             device=device,
-            precision=config.train.precision,
+            expected_identity=identity,
         )
-        fixed_monitor_record["step"] = 0
-        _append_jsonl(fixed_monitor_path, fixed_monitor_record)
-        initial_fixed_monitor_loss = float(fixed_monitor_record["loss"])
-        final_fixed_monitor_loss = initial_fixed_monitor_loss
+        if global_step >= target_steps:
+            raise ValueError(
+                "Resume checkpoint is already at step "
+                f"{global_step}, not below target {target_steps}"
+            )
+        micro_step = int(
+            run_state.get("micro_step", global_step * config.train.gradient_accumulation)
+        )
+        if micro_step % config.train.gradient_accumulation:
+            raise ValueError("Resume checkpoint was taken during gradient accumulation")
+        running_loss = float(run_state.get("running_loss", 0.0))
+        running_in_batch_loss = float(run_state.get("running_in_batch_loss", 0.0))
+        initial_loss = run_state.get("initial_loss")
+        final_loss = run_state.get("final_loss")
+        initial_in_batch_loss = run_state.get("initial_in_batch_loss")
+        final_in_batch_loss = run_state.get("final_in_batch_loss")
+        initial_fixed_monitor_loss = run_state.get("initial_fixed_monitor_loss")
+        final_fixed_monitor_loss = run_state.get("final_fixed_monitor_loss")
+        initial_validation_loss = run_state.get("initial_validation_loss")
+        final_validation_loss = run_state.get("final_validation_loss")
+        validation_evaluations = int(run_state.get("validation_evaluations", 0))
+        best_validation_loss = run_state.get("best_validation_loss")
+        best_validation_step = run_state.get("best_validation_step")
+        if best_validation_loss is not None:
+            best_validation_loss = float(best_validation_loss)
+        if best_validation_step is not None:
+            best_validation_step = int(best_validation_step)
+            best_checkpoint = output_dir / "best.pt"
+            if not best_checkpoint.is_file():
+                raise ValueError("Resume checkpoint references a missing best.pt")
+        last_gradient_norm = run_state.get("last_gradient_norm")
+        if last_gradient_norm is not None:
+            last_gradient_norm = float(last_gradient_norm)
+        last_checkpoint_step = global_step
+        _append_jsonl(
+            resume_history_path,
+            {
+                "format_version": 1,
+                "checkpoint": str(resumed_from),
+                "checkpoint_sha256": sha256_file(resumed_from),
+                "checkpoint_step": global_step,
+                "target_steps": config.train.max_steps,
+                "run_identity": identity,
+            },
+        )
+        print(f"resumed_from={resumed_from} step={global_step}", flush=True)
+    else:
+        if fixed_monitor_batch is not None:
+            fixed_monitor_record = _evaluate_fixed_monitor(
+                model=model,
+                tokenizer=tokenizer,
+                batch=fixed_monitor_batch,
+                device=device,
+                precision=config.train.precision,
+            )
+            fixed_monitor_record["step"] = 0
+            _append_jsonl(fixed_monitor_path, fixed_monitor_record)
+            initial_fixed_monitor_loss = float(fixed_monitor_record["loss"])
+            final_fixed_monitor_loss = initial_fixed_monitor_loss
+        if validation is not None and config.train.validation_at_start:
+            _, validation_loader = validation
+            validation_record = _evaluate_validation(
+                model=model,
+                tokenizer=tokenizer,
+                loader=validation_loader,
+                device=device,
+                precision=config.train.precision,
+            )
+            validation_record["step"] = 0
+            _append_jsonl(validation_path, validation_record)
+            initial_validation_loss = float(validation_record["loss"])
+            final_validation_loss = initial_validation_loss
+            validation_evaluations = 1
+
+    def checkpoint_run_state() -> dict[str, Any]:
+        return {
+            "micro_step": micro_step,
+            "running_loss": running_loss,
+            "running_in_batch_loss": running_in_batch_loss,
+            "initial_loss": initial_loss,
+            "final_loss": final_loss,
+            "initial_in_batch_loss": initial_in_batch_loss,
+            "final_in_batch_loss": final_in_batch_loss,
+            "initial_fixed_monitor_loss": initial_fixed_monitor_loss,
+            "final_fixed_monitor_loss": final_fixed_monitor_loss,
+            "initial_validation_loss": initial_validation_loss,
+            "final_validation_loss": final_validation_loss,
+            "validation_evaluations": validation_evaluations,
+            "best_validation_loss": best_validation_loss,
+            "best_validation_step": best_validation_step,
+            "last_gradient_norm": last_gradient_norm,
+        }
+
+    def save_current_checkpoint() -> Path:
+        return save_checkpoint(
+            output_dir,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            queue=queue,
+            sampler_state=sampler.state_dict(),
+            loader_generator_state=loader_generator.get_state(),
+            run_state=checkpoint_run_state(),
+            run_identity=identity,
+            step=global_step,
+            config_text=config_text,
+        )
+
     start = time.monotonic()
-    while global_step < config.train.max_steps:
+    while global_step < target_steps:
         for batch in loader:
             if not batch["ids"]:
                 raise RuntimeError("DataLoader produced an empty batch")
@@ -274,6 +526,7 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                 _assert_finite_loss(in_batch_loss, batch["ids"])
             scaler.scale(loss).backward()
             queue.enqueue(image_features, text_features)
+            sampler.advance()
             optimizer_step_loss += float(loss_output.loss.detach())
             optimizer_step_in_batch_loss += float(in_batch_loss)
             micro_step += 1
@@ -316,6 +569,31 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                 _append_jsonl(fixed_monitor_path, fixed_monitor_record)
                 final_fixed_monitor_loss = float(fixed_monitor_record["loss"])
 
+            improved_validation = False
+            if validation is not None and global_step % config.train.validation_every == 0:
+                _, validation_loader = validation
+                validation_record = _evaluate_validation(
+                    model=model,
+                    tokenizer=tokenizer,
+                    loader=validation_loader,
+                    device=device,
+                    precision=config.train.precision,
+                )
+                validation_record["step"] = global_step
+                _append_jsonl(validation_path, validation_record)
+                final_validation_loss = float(validation_record["loss"])
+                if initial_validation_loss is None:
+                    initial_validation_loss = final_validation_loss
+                validation_evaluations += 1
+                if best_validation_loss is None or final_validation_loss < best_validation_loss:
+                    best_validation_loss = final_validation_loss
+                    best_validation_step = global_step
+                    best_checkpoint = output_dir / "best.pt"
+                    improved_validation = True
+                print(
+                    "validation=" + json.dumps(validation_record, ensure_ascii=False), flush=True
+                )
+
             if global_step % config.train.log_every == 0:
                 elapsed = time.monotonic() - start
                 record = {
@@ -335,29 +613,20 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
                 running_in_batch_loss = 0.0
                 start = time.monotonic()
 
-            if global_step % config.train.checkpoint_every == 0:
-                path = save_checkpoint(
-                    output_dir,
-                    model=model,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    step=global_step,
-                    config_text=config_text,
-                )
+            if improved_validation:
+                path = save_current_checkpoint()
+                best_checkpoint = save_best_checkpoint(output_dir, path)
+                print(f"checkpoint={path} best_checkpoint={best_checkpoint}", flush=True)
+                last_checkpoint_step = global_step
+            elif global_step % config.train.checkpoint_every == 0:
+                path = save_current_checkpoint()
                 print(f"checkpoint={path}", flush=True)
                 last_checkpoint_step = global_step
-            if global_step >= config.train.max_steps:
+            if global_step >= target_steps:
                 break
 
     if global_step != last_checkpoint_step:
-        final_checkpoint = save_checkpoint(
-            output_dir,
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            step=global_step,
-            config_text=config_text,
-        )
+        final_checkpoint = save_current_checkpoint()
     else:
         final_checkpoint = output_dir / f"step_{global_step:07d}.pt"
     if (
@@ -368,9 +637,12 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
         or last_gradient_norm is None
     ):
         raise RuntimeError("Training completed without an optimizer step")
-    summary = {
-        "format_version": 1,
+    summary: dict[str, Any] = {
+        "format_version": 2,
         "steps": global_step,
+        "target_steps": config.train.max_steps,
+        "completed": global_step == config.train.max_steps,
+        "resumed_from": None if resumed_from is None else str(resumed_from),
         "samples_in_manifest": len(dataset),
         "batch_size": config.train.batch_size,
         "gradient_accumulation": config.train.gradient_accumulation,
@@ -395,6 +667,20 @@ def train(config: Config, model: Any, tokenizer: Any) -> Path:
             "every": config.train.fixed_monitor_every,
             "initial_loss": initial_fixed_monitor_loss,
             "final_loss": final_fixed_monitor_loss,
+        }
+    if validation is not None:
+        validation_dataset, _ = validation
+        summary["validation"] = {
+            "samples": len(validation_dataset),
+            "batch_size": config.data.validation_batch_size,
+            "every": config.train.validation_every,
+            "evaluations": validation_evaluations,
+            "initial_loss": initial_validation_loss,
+            "final_loss": final_validation_loss,
+            "best_loss": best_validation_loss,
+            "best_step": best_validation_step,
+            "best_checkpoint": None if best_checkpoint is None else str(best_checkpoint),
+            "all_losses_finite": True,
         }
     summary_path = _write_json_atomic(output_dir / "training_summary.json", summary)
     return summary_path
