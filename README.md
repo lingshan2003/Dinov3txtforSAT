@@ -145,6 +145,14 @@ bash scripts/run_sat_500step_formal_schedule_pilot.sh
 
 脚本会读取已审查的 Web `recovery_report.json`，明确记录其 step-250 resume 证据已降级；这只允许继续 SAT pilot，**不**构成启动正式 5,000-step 实验的许可。SAT 输出的 verifier 成功写出前，必须保留 step 0/250/500 与 `best.pt`。
 
+两个 500-step pilot 完成后，先固定未参与模型选择的下游测试集并评测四个候选（Web/SAT 官方初始化、Web/SAT 500-step `best.pt`）：
+
+```bash
+bash scripts/run_downstream_pilot_evaluation.sh
+```
+
+该脚本将 EuroSAT 的 27,000 张图像按版本控制的 prompt ensemble 进行零样本分类，并只使用 RSICD 官方 `test` split 的全部原始 caption 计算 I→T/T→I Recall@1/5/10、median rank。每个微调 checkpoint 在加载前会严格比对其训练 `config.toml`、provenance 输入 hash 和 checkpoint identity；输出目录中的 `verification_report.json` 确认四组模型使用相同的 EuroSAT/RSICD manifests。测试集不会参与 `best.pt` 选择。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构

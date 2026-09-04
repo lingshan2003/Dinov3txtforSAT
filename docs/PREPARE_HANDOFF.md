@@ -209,7 +209,15 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
    ```
 
    SAT 使用相同训练样本、训练 batch、梯度累积、queue、5,000-step 调度、250-step resume 和 16 样本 validation loss。为了缩短纯确定性 validation，它额外设置 `validation_forward_batch_size = 64` 与 4 个 validation workers；每个 64 样本前向仍严格切回连续的四组 16 样本计算 InfoNCE，故不改变 validation 指标。训练 DataLoader 继续为 `num_workers = 0`，不改变 resume 的随机数/采样语义。若 SAT 仍不改善，则把它作为 generic dino.txt initialization 的 domain-mismatch 诊断，而不是正式对照。
-7. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
+7. 在正式训练前运行下游闭环：
+
+   ```bash
+   bash scripts/run_downstream_pilot_evaluation.sh
+   ```
+
+   脚本将从只读的原始 EuroSAT 目录派生、hash 固定全量 27,000 图像 manifest；从 SHA-256 已知的 `dataset_rsicd.json` 派生官方 `test` split 的多 caption retrieval manifest。它先运行 Web/SAT 官方 generic dino.txt 初始化，再严格加载 Web step-300 best 与 SAT step-500 best，分别写入 EuroSAT zero-shot Top-1/mean-per-class accuracy、RSICD I→T/T→I Recall@1/5/10 和 median rank。四份报告由同一 verifier 检查 manifest 一致性、指标范围、checkpoint 身份和 split，测试集不参与 checkpoint 选择。
+
+   SAT fast-validation 实现中曾将 validation 计时起点变量与 loss 分组循环变量同名，造成 `elapsed_seconds` 失真；这只影响 SAT pilot 的耗时记录，不影响 loss、best、checkpoint 或 resume。现已更名并加入回归测试，任何新验证的耗时字段均正确。
 8. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
 
 正式实验前需要留存的证据包括：配置快照、代码 commit、每个 manifest 的 SHA-256、随机种子、硬件/软件环境、训练/验证曲线、最佳 checkpoint、恢复训练结果以及 EuroSAT/RSICD 指标。**在 `verification_report.json` 成功写出前，不得删除协议要求的任何 `step_*.pt`。** `best.pt` 只是当时全局最优 step checkpoint 的硬链接或副本，不能替代任意一个不同 step 的 resume checkpoint。若误删后需要盘点剩余证据，以只读诊断工具生成小报告（不会伪造 checkpoint）：

@@ -239,6 +239,8 @@ def test_larger_validation_forward_batch_preserves_loss_groups() -> None:
     assert metric["batches"] == accelerated["batches"] == 3
     assert metric["forward_batches"] == 3
     assert accelerated["forward_batches"] == 2
+    assert metric["elapsed_seconds"] < 60
+    assert accelerated["elapsed_seconds"] < 60
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:

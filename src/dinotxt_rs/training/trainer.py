@@ -258,11 +258,14 @@ def _evaluate_validation(
                 with _autocast(device, precision):
                     image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
                 forward_batches += 1
-                for start in range(0, len(batch["ids"]), loss_batch_size):
-                    end = start + loss_batch_size
-                    group_ids = batch["ids"][start:end]
+                for group_start in range(0, len(batch["ids"]), loss_batch_size):
+                    group_end = group_start + loss_batch_size
+                    group_ids = batch["ids"][group_start:group_end]
                     loss = symmetric_contrastive_loss(
-                        image_features[start:end], text_features[start:end], logit_scale, queue=None
+                        image_features[group_start:group_end],
+                        text_features[group_start:group_end],
+                        logit_scale,
+                        queue=None,
                     ).loss
                     _assert_finite_loss(loss, group_ids)
                     group_size = len(group_ids)
