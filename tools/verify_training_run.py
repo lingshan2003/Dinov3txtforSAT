@@ -29,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-validation", action="store_true")
     parser.add_argument("--expected-val-manifest-sha256")
     parser.add_argument("--validation-every", type=int)
+    parser.add_argument("--expected-validation-loss-batch-size", type=int)
+    parser.add_argument("--expected-validation-forward-batch-size", type=int)
     parser.add_argument("--require-best-checkpoint", action="store_true")
     parser.add_argument("--required-resume-step", action="append", type=int, default=[])
     return parser.parse_args()
@@ -98,6 +100,8 @@ def verify_training_run(
     require_validation: bool = False,
     expected_val_manifest_sha256: str | None = None,
     validation_every: int | None = None,
+    expected_validation_loss_batch_size: int | None = None,
+    expected_validation_forward_batch_size: int | None = None,
     require_best_checkpoint: bool = False,
     required_resume_steps: tuple[int, ...] = (),
 ) -> dict[str, Any]:
@@ -117,6 +121,25 @@ def verify_training_run(
         raise ValueError("fixed_monitor_every must be positive")
     if require_validation and (expected_val_manifest_sha256 is None or validation_every is None):
         raise ValueError("Required validation needs its expected manifest SHA-256 and interval")
+    if (
+        expected_validation_loss_batch_size is not None
+        and expected_validation_loss_batch_size <= 0
+    ):
+        raise ValueError("expected_validation_loss_batch_size must be positive")
+    if (
+        expected_validation_forward_batch_size is not None
+        and expected_validation_forward_batch_size <= 0
+    ):
+        raise ValueError("expected_validation_forward_batch_size must be positive")
+    if (
+        expected_validation_loss_batch_size is not None
+        and expected_validation_forward_batch_size is not None
+        and expected_validation_forward_batch_size % expected_validation_loss_batch_size
+    ):
+        raise ValueError(
+            "expected_validation_forward_batch_size must be a multiple of "
+            "expected_validation_loss_batch_size"
+        )
     if validation_every is not None and validation_every <= 0:
         raise ValueError("validation_every must be positive")
     if require_best_checkpoint and not require_validation:
@@ -232,6 +255,24 @@ def verify_training_run(
                 raise ValueError(f"validation step {step} samples must be a positive int")
             if not isinstance(batches, int) or batches <= 0:
                 raise ValueError(f"validation step {step} batches must be a positive int")
+            if (
+                expected_validation_loss_batch_size is not None
+                and record.get("loss_batch_size") != expected_validation_loss_batch_size
+            ):
+                raise ValueError(
+                    f"Unexpected validation loss batch size at step {step}: "
+                    f"expected {expected_validation_loss_batch_size}, "
+                    f"got {record.get('loss_batch_size')!r}"
+                )
+            if (
+                expected_validation_forward_batch_size is not None
+                and record.get("forward_batch_size") != expected_validation_forward_batch_size
+            ):
+                raise ValueError(
+                    f"Unexpected validation forward batch size at step {step}: "
+                    f"expected {expected_validation_forward_batch_size}, "
+                    f"got {record.get('forward_batch_size')!r}"
+                )
         validation_summary = summary.get("validation")
         if not isinstance(validation_summary, dict):
             raise ValueError("Summary has no validation section")
@@ -242,6 +283,19 @@ def verify_training_run(
             )
         if validation_summary.get("evaluations") != len(validation_records):
             raise ValueError("Summary validation evaluation count does not match validation.jsonl")
+        if (
+            expected_validation_loss_batch_size is not None
+            and validation_summary.get("batch_size") != expected_validation_loss_batch_size
+        ):
+            raise ValueError(
+                "Summary validation batch_size does not match expected loss batch size"
+            )
+        if (
+            expected_validation_forward_batch_size is not None
+            and validation_summary.get("forward_batch_size")
+            != expected_validation_forward_batch_size
+        ):
+            raise ValueError("Summary validation forward_batch_size does not match expectation")
         for field in ("initial_loss", "final_loss"):
             _finite(validation_summary.get(field), f"summary validation {field}")
     checkpoint = Path(str(summary.get("final_checkpoint", "")))
@@ -400,6 +454,8 @@ def main() -> None:
         require_validation=args.require_validation,
         expected_val_manifest_sha256=args.expected_val_manifest_sha256,
         validation_every=args.validation_every,
+        expected_validation_loss_batch_size=args.expected_validation_loss_batch_size,
+        expected_validation_forward_batch_size=args.expected_validation_forward_batch_size,
         require_best_checkpoint=args.require_best_checkpoint,
         required_resume_steps=tuple(args.required_resume_step),
     )

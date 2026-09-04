@@ -167,6 +167,20 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _validation_loader_settings(config: Config) -> tuple[int, int, int | None]:
+    """Resolve the independent forward/I/O settings for deterministic validation."""
+    loss_batch_size = config.data.validation_batch_size
+    if loss_batch_size is None:  # Defensive guard for callers bypassing config validation.
+        raise ValueError("Validation was enabled without a validation_batch_size")
+    forward_batch_size = config.data.validation_forward_batch_size or loss_batch_size
+    num_workers = (
+        config.data.num_workers
+        if config.data.validation_num_workers is None
+        else config.data.validation_num_workers
+    )
+    return forward_batch_size, num_workers, config.data.validation_prefetch_factor
+
+
 def _load_validation_loader(
     config: Config, device: torch.device
 ) -> tuple[ImageTextDataset, DataLoader] | None:
@@ -180,15 +194,21 @@ def _load_validation_loader(
     )
     if not len(dataset):
         raise ValueError("Validation manifest is empty")
+    forward_batch_size, num_workers, prefetch_factor = _validation_loader_settings(config)
+    loader_kwargs: dict[str, Any] = {
+        "batch_size": forward_batch_size,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "pin_memory": device.type == "cuda",
+        "persistent_workers": num_workers > 0,
+        "drop_last": False,
+        "collate_fn": collate_image_text,
+    }
+    if prefetch_factor is not None:
+        loader_kwargs["prefetch_factor"] = prefetch_factor
     loader = DataLoader(
         dataset,
-        batch_size=config.data.validation_batch_size,
-        shuffle=False,
-        num_workers=config.data.num_workers,
-        pin_memory=device.type == "cuda",
-        persistent_workers=config.data.num_workers > 0,
-        drop_last=False,
-        collate_fn=collate_image_text,
+        **loader_kwargs,
     )
     return dataset, loader
 
@@ -200,13 +220,26 @@ def _evaluate_validation(
     loader: DataLoader,
     device: torch.device,
     precision: str,
+    loss_batch_size: int,
 ) -> dict[str, float | int | None]:
-    """Evaluate every validation sample with deterministic preprocessing and no queue."""
+    """Evaluate deterministic groups without queue, batching only the model forward.
+
+    ``loss_batch_size`` defines the published validation metric.  A DataLoader
+    batch may contain a multiple of that size solely to run fewer GPU forward
+    passes; embeddings are split back into their original groups before the
+    InfoNCE loss is calculated.
+    """
+    if loss_batch_size <= 0:
+        raise ValueError("loss_batch_size must be positive")
+    forward_batch_size = loader.batch_size
+    if not isinstance(forward_batch_size, int) or forward_batch_size % loss_batch_size:
+        raise ValueError("Validation forward batch size must be a multiple of loss_batch_size")
     was_training = model.training
     model.eval()
     total_loss = 0.0
     total_samples = 0
-    batches = 0
+    loss_batches = 0
+    forward_batches = 0
     logit_scale_value: float | None = None
     start = time.monotonic()
     try:
@@ -224,14 +257,18 @@ def _evaluate_validation(
                     )
                 with _autocast(device, precision):
                     image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
+                forward_batches += 1
+                for start in range(0, len(batch["ids"]), loss_batch_size):
+                    end = start + loss_batch_size
+                    group_ids = batch["ids"][start:end]
                     loss = symmetric_contrastive_loss(
-                        image_features, text_features, logit_scale, queue=None
+                        image_features[start:end], text_features[start:end], logit_scale, queue=None
                     ).loss
-                _assert_finite_loss(loss, batch["ids"])
-                batch_size = len(batch["ids"])
-                total_loss += float(loss) * batch_size
-                total_samples += batch_size
-                batches += 1
+                    _assert_finite_loss(loss, group_ids)
+                    group_size = len(group_ids)
+                    total_loss += float(loss) * group_size
+                    total_samples += group_size
+                    loss_batches += 1
                 logit_scale_value = float(logit_scale.detach())
     finally:
         if was_training:
@@ -241,7 +278,10 @@ def _evaluate_validation(
     return {
         "loss": total_loss / total_samples,
         "samples": total_samples,
-        "batches": batches,
+        "batches": loss_batches,
+        "forward_batches": forward_batches,
+        "loss_batch_size": loss_batch_size,
+        "forward_batch_size": forward_batch_size,
         "logit_scale": logit_scale_value,
         "elapsed_seconds": time.monotonic() - start,
         "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
@@ -458,6 +498,7 @@ def train(
                 loader=validation_loader,
                 device=device,
                 precision=config.train.precision,
+                loss_batch_size=config.data.validation_batch_size,
             )
             validation_record["step"] = 0
             _append_jsonl(validation_path, validation_record)
@@ -589,6 +630,7 @@ def train(
                     loader=validation_loader,
                     device=device,
                     precision=config.train.precision,
+                    loss_batch_size=config.data.validation_batch_size,
                 )
                 validation_record["step"] = global_step
                 _append_jsonl(validation_path, validation_record)
@@ -684,6 +726,8 @@ def train(
         summary["validation"] = {
             "samples": len(validation_dataset),
             "batch_size": config.data.validation_batch_size,
+            "forward_batch_size": _validation_loader_settings(config)[0],
+            "num_workers": _validation_loader_settings(config)[1],
             "every": config.train.validation_every,
             "evaluations": validation_evaluations,
             "initial_loss": initial_validation_loss,

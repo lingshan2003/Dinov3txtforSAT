@@ -137,6 +137,14 @@ bash scripts/run_web_500step_formal_schedule_pilot.sh
 
 在该脚本产生 `verification_report.json` 前，保留 `step_0000000.pt`、`step_0000250.pt`、`step_0000500.pt` 和 `best.pt`。`best.pt` 只能代表它自身 payload 所属的 step，不能代替已经删除的不同 step checkpoint。若发生误删，运行 `tools/inspect_training_artifacts.py` 生成 `recovery_report.json`，先据此判断是否仍能恢复某个同 step 的副本，以及 resume 证据是否已降级。
 
+当前 Web pilot 已在全量 validation 上从 3.8231 降至 2.7668（best step 300），可进入等价的 SAT 500-step pilot。该配置保留 validation 的 16 样本 InfoNCE 指标定义，但让模型每次前向处理 64 个样本，并用 4 个仅用于确定性 validation 的 DataLoader workers 来缩短评估时间；训练仍是 `num_workers = 0`，不改变严格 resume 语义。
+
+```bash
+bash scripts/run_sat_500step_formal_schedule_pilot.sh
+```
+
+脚本会读取已审查的 Web `recovery_report.json`，明确记录其 step-250 resume 证据已降级；这只允许继续 SAT pilot，**不**构成启动正式 5,000-step 实验的许可。SAT 输出的 verifier 成功写出前，必须保留 step 0/250/500 与 `best.pt`。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构

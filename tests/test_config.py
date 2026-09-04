@@ -72,3 +72,15 @@ def test_load_formal_schedule_500_step_pilot_config() -> None:
     assert config.train.warmup_steps == 250
     assert config.train.validation_every == 50
     assert config.train.checkpoint_every == 250
+
+
+def test_load_accelerated_validation_sat_pilot_config() -> None:
+    config = load_config(Path("configs/pilot_sat_500step_formal_schedule_fast_validation.toml"))
+    assert config.model.backbone_domain == "sat"
+    assert config.data.num_workers == 0
+    assert config.data.validation_batch_size == 16
+    assert config.data.validation_forward_batch_size == 64
+    assert config.data.validation_num_workers == 4
+    assert config.data.validation_prefetch_factor == 4
+    assert config.train.max_steps == 5000
+    assert config.train.warmup_steps == 250

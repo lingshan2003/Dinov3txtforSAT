@@ -32,7 +32,16 @@ class ModelConfig:
 class DataConfig:
     train_manifest: Path
     val_manifest: Path | None = None
+    # The number of examples in each independent InfoNCE loss.  This is part
+    # of the validation metric definition and must stay fixed to compare runs.
     validation_batch_size: int | None = None
+    # Evaluation may forward several loss batches together, then split their
+    # embeddings back into validation_batch_size groups before computing loss.
+    validation_forward_batch_size: int | None = None
+    # Validation is deterministic (no shuffle or augmentation), so it can use
+    # separate I/O workers without changing train-resume RNG semantics.
+    validation_num_workers: int | None = None
+    validation_prefetch_factor: int | None = None
     num_workers: int = 8
     train_augmentation: bool = True
     shuffle_train: bool = True
@@ -115,6 +124,21 @@ def load_config(path: str | Path) -> Config:
                 if data.get("validation_batch_size") is None
                 else int(data["validation_batch_size"])
             ),
+            validation_forward_batch_size=(
+                None
+                if data.get("validation_forward_batch_size") is None
+                else int(data["validation_forward_batch_size"])
+            ),
+            validation_num_workers=(
+                None
+                if data.get("validation_num_workers") is None
+                else int(data["validation_num_workers"])
+            ),
+            validation_prefetch_factor=(
+                None
+                if data.get("validation_prefetch_factor") is None
+                else int(data["validation_prefetch_factor"])
+            ),
             num_workers=int(data.get("num_workers", 8)),
             train_augmentation=bool(data.get("train_augmentation", True)),
             shuffle_train=bool(data.get("shuffle_train", True)),
@@ -167,6 +191,8 @@ def validate_config(config: Config) -> None:
     for name, value in positive.items():
         if value <= 0:
             raise ValueError(f"train.{name} must be positive")
+    if config.data.num_workers < 0:
+        raise ValueError("data.num_workers must be nonnegative")
     has_fixed_monitor = config.data.fixed_monitor_manifest is not None
     if has_fixed_monitor != (config.data.fixed_monitor_batch_size is not None):
         raise ValueError(
@@ -191,8 +217,42 @@ def validate_config(config: Config) -> None:
             raise ValueError("train.validation_every requires data.validation_batch_size")
         if config.data.validation_batch_size <= 0:
             raise ValueError("data.validation_batch_size must be positive")
+        forward_batch_size = (
+            config.data.validation_batch_size
+            if config.data.validation_forward_batch_size is None
+            else config.data.validation_forward_batch_size
+        )
+        if forward_batch_size <= 0:
+            raise ValueError("data.validation_forward_batch_size must be positive")
+        if forward_batch_size < config.data.validation_batch_size:
+            raise ValueError(
+                "data.validation_forward_batch_size must be at least validation_batch_size"
+            )
+        if forward_batch_size % config.data.validation_batch_size:
+            raise ValueError(
+                "data.validation_forward_batch_size must be a multiple of validation_batch_size"
+            )
+        validation_num_workers = config.data.validation_num_workers
+        if validation_num_workers is not None and validation_num_workers < 0:
+            raise ValueError("data.validation_num_workers must be nonnegative")
+        prefetch_factor = config.data.validation_prefetch_factor
+        if prefetch_factor is not None and prefetch_factor <= 0:
+            raise ValueError("data.validation_prefetch_factor must be positive")
+        if prefetch_factor is not None and (validation_num_workers or 0) == 0:
+            raise ValueError(
+                "data.validation_prefetch_factor requires positive validation_num_workers"
+            )
     elif config.data.validation_batch_size is not None:
         raise ValueError("data.validation_batch_size requires train.validation_every")
+    elif any(
+        value is not None
+        for value in (
+            config.data.validation_forward_batch_size,
+            config.data.validation_num_workers,
+            config.data.validation_prefetch_factor,
+        )
+    ):
+        raise ValueError("data.validation acceleration settings require train.validation_every")
     if config.train.warmup_steps >= config.train.max_steps:
         raise ValueError("train.warmup_steps must be smaller than train.max_steps")
 

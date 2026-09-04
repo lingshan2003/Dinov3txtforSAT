@@ -5,9 +5,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from torch.utils.data import DataLoader
 
 from dinotxt_rs.config import Config, DataConfig, ExperimentConfig, ModelConfig, TrainConfig
-from dinotxt_rs.training.trainer import train
+from dinotxt_rs.training.trainer import _evaluate_validation, train
 
 
 class TinyTokenizer:
@@ -201,6 +202,43 @@ def test_validation_best_checkpoint_and_strict_resume(tmp_path) -> None:
     (tmp_path / "backbone.pth").write_bytes(b"changed")
     with pytest.raises(ValueError, match="checkpoint identity differs: files"):
         train(config, TinyModel(), TinyTokenizer(), resume=checkpoint)
+
+
+def test_larger_validation_forward_batch_preserves_loss_groups() -> None:
+    records = [
+        {
+            "ids": f"sample-{index}",
+            "pixels": torch.full((3, 8, 8), float(index + 1)),
+            "captions": f"caption {index}",
+        }
+        for index in range(5)
+    ]
+    model = TinyModel().eval()
+    tokenizer = TinyTokenizer()
+    metric_loader = DataLoader(records, batch_size=2, shuffle=False)
+    accelerated_loader = DataLoader(records, batch_size=4, shuffle=False)
+
+    metric = _evaluate_validation(
+        model=model,
+        tokenizer=tokenizer,
+        loader=metric_loader,
+        device=torch.device("cpu"),
+        precision="fp32",
+        loss_batch_size=2,
+    )
+    accelerated = _evaluate_validation(
+        model=model,
+        tokenizer=tokenizer,
+        loader=accelerated_loader,
+        device=torch.device("cpu"),
+        precision="fp32",
+        loss_batch_size=2,
+    )
+
+    assert metric["loss"] == pytest.approx(accelerated["loss"], abs=1e-7)
+    assert metric["batches"] == accelerated["batches"] == 3
+    assert metric["forward_batches"] == 3
+    assert accelerated["forward_batches"] == 2
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:

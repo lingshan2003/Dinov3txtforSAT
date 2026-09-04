@@ -50,7 +50,15 @@ def assert_shapes(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load dino.txt and run one synthetic forward pass")
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2,
+        help="Synthetic forward batch size; use this to preflight evaluation memory",
+    )
     args = parser.parse_args()
+    if args.batch_size <= 0:
+        raise ValueError("--batch-size must be positive")
 
     import torch
 
@@ -81,7 +89,8 @@ def main() -> None:
         train_logit_scale=config.model.train_logit_scale,
     )
     model.to(device).eval()
-    prompts = ["a satellite image of forest", "a satellite image of water"]
+    prompt_templates = ["a satellite image of forest", "a satellite image of water"]
+    prompts = [prompt_templates[index % len(prompt_templates)] for index in range(args.batch_size)]
     pixels = torch.randn(
         len(prompts),
         3,

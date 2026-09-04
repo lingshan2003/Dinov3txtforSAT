@@ -202,7 +202,13 @@ val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jso
 
    配置的 `max_steps = 5000`、`warmup_steps = 250` 与未来正式训练一致，但脚本仅运行至 step 500，并在 step 250 保存、重启、严格恢复到 step 500。全量 validation 在 step 0、50、…、500 以固定 batch、无增强、无 queue 的 in-batch InfoNCE 按样本加权平均写入 `validation.jsonl`；`best.pt` 可以合法地指向 `step_0000000.pt`。报告必须确认 `target_steps = 5000`、`completed = false`、step 0/250/500 checkpoint、step 250 resume 和全局 best 选择。若 validation 从未低于 step 0，停止并调整受限配置，**不得**继续到 5,000。
 
-6. 只有第 5 步 Web pilot 出现优于 step 0 的 validation，才以同一受限协议为 SAT 编写/运行 500-step pilot；若 SAT 仍不改善，则把它作为 generic dino.txt initialization 的 domain-mismatch 诊断，而不是正式对照。
+6. Web pilot 已出现优于 step 0 的 validation：全量 loss 从 3.8231 降至 2.7668（step 300，−27.6%），并在 step 500 保持 2.7683。其 step-250 checkpoint 已被误删，故 resume 证据状态为 degraded；这不否定已记录的学习曲线，却不足以授权正式训练。下一步运行等价的 SAT 500-step pilot：
+
+   ```bash
+   bash scripts/run_sat_500step_formal_schedule_pilot.sh
+   ```
+
+   SAT 使用相同训练样本、训练 batch、梯度累积、queue、5,000-step 调度、250-step resume 和 16 样本 validation loss。为了缩短纯确定性 validation，它额外设置 `validation_forward_batch_size = 64` 与 4 个 validation workers；每个 64 样本前向仍严格切回连续的四组 16 样本计算 InfoNCE，故不改变 validation 指标。训练 DataLoader 继续为 `num_workers = 0`，不改变 resume 的随机数/采样语义。若 SAT 仍不改善，则把它作为 generic dino.txt initialization 的 domain-mismatch 诊断，而不是正式对照。
 7. 实现 EuroSAT 零样本分类和 RSICD 双向检索，先保存未微调的 Web/SAT 基线。
 8. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
 

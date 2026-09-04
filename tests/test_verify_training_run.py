@@ -45,9 +45,33 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
         "".join(json.dumps(record) + "\n" for record in fixed_monitor), encoding="utf-8"
     )
     validation = [
-        {"step": 0, "loss": 1.0, "logit_scale": 100.0, "samples": 2, "batches": 1},
-        {"step": 1, "loss": 2.1, "logit_scale": 99.0, "samples": 2, "batches": 1},
-        {"step": 2, "loss": 1.2, "logit_scale": 98.0, "samples": 2, "batches": 1},
+        {
+            "step": 0,
+            "loss": 1.0,
+            "logit_scale": 100.0,
+            "samples": 2,
+            "batches": 1,
+            "loss_batch_size": 2,
+            "forward_batch_size": 4,
+        },
+        {
+            "step": 1,
+            "loss": 2.1,
+            "logit_scale": 99.0,
+            "samples": 2,
+            "batches": 1,
+            "loss_batch_size": 2,
+            "forward_batch_size": 4,
+        },
+        {
+            "step": 2,
+            "loss": 1.2,
+            "logit_scale": 98.0,
+            "samples": 2,
+            "batches": 1,
+            "loss_batch_size": 2,
+            "forward_batch_size": 4,
+        },
     ]
     (output / "validation.jsonl").write_text(
         "".join(json.dumps(record) + "\n" for record in validation), encoding="utf-8"
@@ -82,6 +106,7 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
                 "validation": {
                     "samples": 2,
                     "batch_size": 2,
+                    "forward_batch_size": 4,
                     "every": 1,
                     "evaluations": 3,
                     "initial_loss": 1.0,
@@ -125,6 +150,8 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
         require_validation=True,
         expected_val_manifest_sha256="val-manifest",
         validation_every=1,
+        expected_validation_loss_batch_size=2,
+        expected_validation_forward_batch_size=4,
         require_best_checkpoint=True,
         required_resume_steps=(1,),
     )
