@@ -1,226 +1,255 @@
-# DINOv3 Remote-Sensing Text Alignment：M0–M2 交接记录
+# DINOv3 Remote-Sensing Text Alignment：截至 M3 的交接记录
 
-更新时间：2026-09-03
-当前状态：M0（资产与环境）、M1（模型加载）和 M2（数据准备与真实批次前向）均已完成。**尚未启动正式训练。** 下一阶段是受限的 Web 过拟合验证（10 step，再到 100 step），随后才补齐验证、checkpoint/resume 与下游评测闭环。
+更新时间：2026-09-04
+当前阶段：M0（资产与环境）、M1（模型加载）、M2（数据协议）和 M3（受限训练、恢复、下游评测闭环）已完成。**当前 500-step 配置不具备启动 5,000-step 正式训练的资格。** 这不是项目失败，而是一个有效的负向实验结果：它证明当前训练目标、可训练范围和超参数组合虽能降低 ChatEarthNet 验证损失，却损害了已观测的外部零样本与检索能力。
 
-## 1. 服务器与仓库
+本文取代此前版本的 `docs/PREPARE_HANDOFF.md`，并保留已核验资产、数据协议、已完成实验、已知局限与下一阶段门槛。除明确标为“假设”的内容外，所有数值均来自已保存的配置、输出报告或核验记录。
 
-- GitHub 仓库：`lingshan2003/Dinov3txtforSAT`（私有仓库）
+## 1. 项目与运行环境
+
+- GitHub 仓库：`lingshan2003/Dinov3txtforSAT`（私有）
 - AutoDL 项目：`/root/autodl-tmp/Dinov3txtforSAT`
-- 虚拟环境：`/root/autodl-tmp/Dinov3txtforSAT/.venv`
-- DINOv3 源码：`/root/autodl-tmp/Dinov3txtforSAT/external/dinov3`
-- 权重：`/root/autodl-tmp/Dinov3txtforSAT/assets/checkpoints`
-- 原始数据：`/root/autodl-tmp/Dinov3txtforSAT/assets/data/raw`
-- 派生 manifest：`/root/autodl-tmp/Dinov3txtforSAT/assets/data/manifests`
-- 审计与实验输出：`/root/autodl-tmp/Dinov3txtforSAT/outputs`
+- 本地项目：`/Users/wangyue/Documents/ChatGPT/Dinov3txtforSAT`
+- 服务器虚拟环境：`/root/autodl-tmp/Dinov3txtforSAT/.venv`（由 `uv` 管理）
+- DINOv3 固定源码：`/root/autodl-tmp/Dinov3txtforSAT/external/dinov3`
+- DINOv3 固定 commit：`6876159a11b4df116f30f667f8c9888617df0751`
+- 已验证服务器环境：Python 3.12.3、PyTorch `2.7.1+cu128`、CUDA runtime 12.8、RTX 4090、BF16 可用。
 
-数据、权重、外部 DINOv3 源码、输出目录和本地 `.venv` 都被 `.gitignore` 排除，均不应提交到 Git。
-
-每次重新连接服务器：
+服务器重新连接后的起始命令：
 
 ```bash
 cd /root/autodl-tmp/Dinov3txtforSAT
 source .venv/bin/activate
+git pull
 ```
 
-服务器已确认的运行环境：Python 3.12、PyTorch `2.7.1+cu128`、CUDA runtime 12.8、RTX 4090、BF16 可用。DINOv3 固定在提交 `6876159a11b4df116f30f667f8c9888617df0751`，项目以 editable 模式安装。
+权重、原始数据、DINOv3 外部源码、`outputs/` 与 `.venv/` 均不进入 Git。不要以删除 checkpoint 节省空间的方式替代实验产物管理；详见第 9 节。
 
-## 2. M0：已核验的资产
+截至本文更新，代码中的关键提交为：
+
+| 提交 | 内容 |
+| --- | --- |
+| `14916f8` | Web 500-step、正式 5,000-step 调度的受限 pilot 与含 step 0 的 best 选择 |
+| `4569b14` | 缺失训练产物的只读恢复诊断 |
+| `b2a68dd` | SAT 500-step pilot 与加速但等价的 validation forward |
+| `1f58343` | 修复 validation 计时变量遮蔽；增加 EuroSAT/RSICD 下游评测闭环 |
+
+## 2. 已核验资产
 
 ### 2.1 模型与文本资源
 
-下列文件均位于 `assets/checkpoints/`，文件大小与 SHA-256 已在服务器核验：
+下列资源位于服务器 `assets/checkpoints/`，文件身份通过 SHA-256 核验：
 
-| 文件 | 字节数 | SHA-256 |
-| --- | ---: | --- |
-| `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` | 1,213,050,671 | `8aa4cbddda325040fc78db2c272754af6ebe8ff2c55f6ec4f1964d8890f66035` |
-| `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | 1,213,059,235 | `eadcf0ffc02418b6c22a885ea1a7aaeeef84fbf0f5bb4d0b7d1d36e68a964f48` |
-| `dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth` | 2,253,936,683 | `a442d8f52a3a7ad715bf6b7d8117fb3a84d54249389b0a13f6956cd0d2eca4f0` |
-| `bpe_simple_vocab_16e6.txt.gz` | 1,356,917 | `924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a` |
+| 文件 | SHA-256 |
+| --- | --- |
+| `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` | `8aa4cbddda325040fc78db2c272754af6ebe8ff2c55f6ec4f1964d8890f66035` |
+| `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | `eadcf0ffc02418b6c22a885ea1a7aaeeef84fbf0f5bb4d0b7d1d36e68a964f48` |
+| `dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth` | `a442d8f52a3a7ad715bf6b7d8117fb3a84d54249389b0a13f6956cd0d2eca4f0` |
+| `bpe_simple_vocab_16e6.txt.gz` | `924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a` |
 
-`bpe_simple_vocab_16e6.txt.gz` 必须保持压缩状态。复核入口为 `python tools/verify_server_assets.py`。
-
-### 2.2 原始数据
-
-| 数据集 | 已核验的真实位置 | 核验结果 | 当前用途 |
-| --- | --- | --- | --- |
-| ChatEarthNet | `assets/data/raw/chatearthnet/s2_images` | 163,488 张 PNG，全部可读 | 图文对齐微调 |
-| EuroSAT | `assets/data/raw/eurosat` | 27,000 张 JPEG，全部可读 | 零样本分类（待实现评测） |
-| RSICD | `assets/data/raw/rsicd` | 10,921 张 JPG，全部可读，全部标注引用可解析 | 双向检索（待实现评测） |
-
-ChatEarthNet 标注的真实位置是：
-
-```text
-assets/data/raw/chatearthnet/json_files/ChatEarthNet_caps_35_{train,val,test}.json
-```
-
-其 35 版本原生记录数分别为 train 98,092、val 16,348、test 49,048。RSICD 的 `dataset_rsicd.json` SHA-256 为 `5e342037d469d074711676bdb9c02b6942a624530b1959d24d2734e68af9cede`。EuroSAT 类别分布为：AnnualCrop、Forest、HerbaceousVegetation、Residential、SeaLake 各 3,000；Highway、Industrial、PermanentCrop、River 各 2,500；Pasture 2,000。
-
-### 2.3 原始归档与再次核验约定
-
-本文合并并取代旧的 `docs/SERVER_ASSETS.md`。当前事实以本交接记录为准；原始压缩包只作为可恢复的只读归档，不应替代已核验的解压数据。历史归档名称分别为 ChatEarthNet 的 `s2_rgb_images.zip`、EuroSAT 的 `EuroSAT.zip`、RSICD 的 `RSICD_images.zip` 与 `annotations_rsicd.rar`。若需要从归档恢复 RSICD 标注，服务器的 `p7zip 16.02` 不支持该 RAR 的压缩方法，应使用 `unrar` 或 `unar`。
-
-资产迁移、恢复或重新下载后，先在项目根目录运行：
+`bpe_simple_vocab_16e6.txt.gz` 必须保持压缩状态。重新迁移或下载资产后，先运行：
 
 ```bash
 python tools/verify_server_assets.py
-find assets/checkpoints -maxdepth 1 -type f -exec ls -lh {} \;
-find assets/data/raw -maxdepth 4 -type d | sort
-find assets/data/raw/chatearthnet -type f | wc -l
-find assets/data/raw/eurosat -type f | wc -l
-find assets/data/raw/rsicd -type f | wc -l
-find assets/data/raw/rsicd -name 'dataset_rsicd.json' -print
-du -sh assets/checkpoints assets/data/raw/*
 ```
 
-不得因重新核验而删除原始归档、旧 checkpoint 或已有实验输出；先确认存在第二份可恢复副本。
+### 2.2 数据集
 
-## 3. M1：模型与管线冒烟结果
+| 数据集 | 已核验位置 | 已知规模 | 已用角色 |
+| --- | --- | ---: | --- |
+| ChatEarthNet | `assets/data/raw/chatearthnet` | 163,488 PNG | 图文对齐训练、同域 validation |
+| EuroSAT | `assets/data/raw/eurosat` | 27,000 JPEG | 已观测的零样本诊断 |
+| RSICD | `assets/data/raw/rsicd` | 10,921 JPG | 已观测的 test 检索诊断 |
 
-### 3.1 合成模型 smoke test
+RSICD 标注 `dataset_rsicd.json` 的 SHA-256 是：
 
-Web 和 SAT 主干均能加载，dino.txt 文本组件和视觉投影头可正常前向；特征、patch token 均为有限值。
-
-| 域 | 总参数 | 可训练参数 | 图文特征 | patch token | logit scale | 峰值显存（约） |
-| --- | ---: | ---: | --- | --- | ---: | ---: |
-| Web | 866,611,713 | 106,644,737 | `[2, 2048]` | `[2, 196, 1024]` | 100.0 | 3.76 GB |
-| SAT | 866,613,761 | 106,644,737 | `[2, 2048]` | `[2, 196, 1024]` | 100.0 | 3.76 GB |
-
-### 3.2 真实 ChatEarthNet 批次 smoke test
-
-当前训练配置使用下面第 4 节的 `global77` 训练 manifest。真实 DataLoader 能稳定读取 `[16, 3, 224, 224]` 的图像批次，Web/SAT 单批前向、损失与显存均正常。
-
-| 域 | 真实 batch | token shape | 最大非 padding token | smoke loss | 峰值 CUDA allocated |
-| --- | --- | --- | ---: | ---: | ---: |
-| Web | 16 | `[16, 77]` | 38 | 3.7621241 | 3,885,012,992 bytes |
-| SAT | 16 | `[16, 77]` | 38 | 3.5476735 | 3,907,730,432 bytes |
-
-这些 loss 仅证明计算图连通且数值有限，**不是**训练性能、基线或 Web/SAT 的比较结论。
-
-已作出的实现修正：
-
-- `tools/prepare_chatearthnet.py` 已适配实际 JSON 与图像目录，并输出可审计 JSONL manifest。
-- 由于 caption 包含左上、右下等方向信息，图文训练数据不再使用未同步修改文本的水平/垂直翻转。
-- `tools/verify_server_assets.py` 可核验权重、目录、图像和标注引用。
-- `tools/filter_manifest_by_image_hash.py` 与 `tools/prepare_global77_manifest.py` 用于生成不可变的派生 manifest。
-- `src/dinotxt_rs/cli/smoke_model.py` 已检查输出 shape、有限数值、可训练参数、logit scale 与 CUDA 峰值分配。
-
-## 4. M2：ChatEarthNet 数据协议（当前有效输入）
-
-### 4.1 10k 候选子集和 no-data 清洗
-
-从 35-train 的 98,092 条记录，以 seed 11 抽取 10,000 条候选样本。原始抽样 manifest 的 SHA-256 是 `cc34af91b93303e77e2f69b6b8260a6a8b1f05036ff0366d883dbaf700a6e511`。
-
-随后发现跨 split 的“泄漏”不是样本 ID 相同，而是两张占位图重复出现：一张全白和一张全黑。这两张图的 SHA-256 分别为：
-
-- `13c0915d226521fb56bba264c92a227dbdebcf9a4add3a4957fd9c810582dbe8`（全白 RGB 255）
-- `3b93f26267630963185ee67d8020972faee108a7bca80db725817e4680c9955c`（全黑 RGB 0）
-
-它们不是有效遥感内容，因而从 train、val、test **全部**移除；不是只从训练集移除。清洗后任意两 split 的 ID overlap 和 image-content-SHA overlap 都为 0。
-
-| split | no-data 前 | 移除 | no-data 后 | no-data 后 SHA-256 |
-| --- | ---: | ---: | ---: | --- |
-| 35 train 10k 候选 | 10,000 | 31 | 9,969 | `3d9d27380e3c7565b136033298934ab1cc9f5d93c3eb11f9e059470860a018fa` |
-| 35 val | 16,348 | 71 | 16,277 | `3426eb87002854c594a2b60ddf1af105a4cbdb1f868651e423af8ef440b491cd` |
-| 35 test | 49,048 | 188 | 48,860 | `8eb3d5d039688afce70c57accf35817ffe71de3e14e87fdbc2b7b3961d1a2024` |
-
-所以“10k”准确说是 **10,000 条候选、9,969 条可用训练样本**。不要用未清洗 manifest 训练或报告结果。
-
-### 4.2 文本长度与 `global77` 策略
-
-dino.txt tokenizer 的 context length 是 77。原始 35 caption 的 BPE token 数 p50/p95 为 184/208，约 99.84% 会被模型静默截断；4v 训练集也有约 96.3% 会截断。因此不能把原始完整 caption 直接作为当前训练目标。
-
-当前采用的、已固化的文本协议为 `first_complete_sentence_then_complete_word_backoff`：
-
-1. 只取首个完整句子；句末仅认定为 `.`, `!`, `?` 后接空白或文本结尾，**逗号不截断**。
-2. 若该完整首句仍超出 77 token 预算，按完整空白分词逐词从末尾回退，使 BPE 内容加 SOT/EOT 不超过 77。
-3. 不丢弃样本，不原地改写输入 manifest；生成新的派生 JSONL 与审计信息。
-
-| split | 当前 `global77` 文件 | 记录数 | SHA-256 | token p50/p95/max | 完整词回退数 |
-| --- | --- | ---: | --- | --- | ---: |
-| train | `chatearthnet_35_train_10k_seed11_no_nodata_global77.jsonl` | 9,969 | `78abc613fbc8d98ea4617770473b30662d9eda31c0deb0dd06b51b1965d9fc0b` | 16 / 35 / 76 | 1 |
-| val | `chatearthnet_35_val_no_nodata_global77.jsonl` | 16,277 | `1040ccf2ec07100ceb81ad665e28527d38b948cc9e1e547eb76e23a265c25f88` | 15 / 35 / 62 | 0 |
-| test | `chatearthnet_35_test_no_nodata_global77.jsonl` | 48,860 | `51662bee9618051416bc7a7983d1fc658c2fe6ed825b86f9258205597ca77716` | 15 / 35 / 76 | 0 |
-
-两份现有 MVP 配置的有效训练/验证输入是：
-
-```toml
-# configs/train_mvp_web.toml 与 configs/train_mvp_sat.toml
-train_manifest = "assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77.jsonl"
-val_manifest = "assets/data/manifests/chatearthnet_35_val_no_nodata_global77.jsonl"
+```text
+5e342037d469d074711676bdb9c02b6942a624530b1959d24d2734e68af9cede
 ```
 
-4v 的 manifest 已生成（train/val/test 为 6,000/1,000/3,000），但尚未按本协议生成 `no_nodata_global77` 版本；它们不是当前正式输入。
+### 2.3 ChatEarthNet 当前数据协议
 
-### 4.3 后续 50k 与全量实验规则
+训练不是“任意 ChatEarthNet 样本”，而是下列不可变协议：
 
-“10k、50k、全量”是用于观察微调量影响的嵌套训练规模，而不是重新按 7:2:1 随机切分数据。后续应：
+1. 从 35-train 的 98,092 条记录以 seed 11 抽取 10,000 条候选。
+2. 在 train/val/test 中都移除两张全黑/全白占位图；清洗后 split 间的 ID 和图像内容哈希交集均为零。
+3. 文本使用 `first_complete_sentence_then_complete_word_backoff`，避免 dino.txt 77-token context length 的静默截断。
+4. 不改变已有 manifest，不就地改写 caption；每个派生产物均有审计文件和 SHA-256。
 
-1. 从同一 35-train 固定 seed/顺序产生前 50k 和全量候选；确保前一规模是后一规模的子集。
-2. 应用同一对全黑/全白 SHA 的 no-data 过滤。
-3. 应用相同的 `global77` 文本生成脚本与 context length。
-4. 固定现有 35 val/test 的 no-data + global77 文件，不因训练规模改变验证或测试集。
-5. 记录输入与输出 manifest SHA-256，实验报告以清洗后的实际样本数为准。
+有效输入如下：
 
-## 5. 已完成的本地与服务器验证
+| split | 文件 | 样本数 | SHA-256 |
+| --- | --- | ---: | --- |
+| train | `chatearthnet_35_train_10k_seed11_no_nodata_global77.jsonl` | 9,969 | `78abc613fbc8d98ea4617770473b30662d9eda31c0deb0dd06b51b1965d9fc0b` |
+| val | `chatearthnet_35_val_no_nodata_global77.jsonl` | 16,277 | `1040ccf2ec07100ceb81ad665e28527d38b948cc9e1e547eb76e23a265c25f88` |
+| test | `chatearthnet_35_test_no_nodata_global77.jsonl` | 48,860 | `51662bee9618051416bc7a7983d1fc658c2fe6ed825b86f9258205597ca77716` |
 
-- 本地使用 `uv` 创建的 `.venv` 仅用于测试，不提交；当前已通过 `ruff check .`、`compileall`、`pytest`（21 passed）。
-- 服务器已通过 `ruff check .`、测试、模型 synthetic smoke、真实 DataLoader smoke，以及上述 Web/SAT 的真实批次前向。
-- 35 train/val/test 清洗后已完成 manifest 审计：无重复 ID、无缺图、无空 caption，且三对 split 均为零 ID/内容哈希交集。
+“10k”在任何论文或报告中都必须准确表述为：**10,000 条候选、9,969 条清洗后实际训练样本**。
 
-## 6. 阶段门槛与下一步
+## 3. 已完成的工程验证
 
-现在**接近**正式实验，但尚不满足“正式多步训练”的闭环标准。下一步不是直接启动大规模或多 seed 训练，而是按下列顺序推进：
+以下项目已经被证实，不应被当前下游退化误解为“管线完全不能运行”：
 
-1. 在服务器从当前 `global77` 训练 manifest 派生固定 16 条训练输入，再运行 Web 受限 10-step 验证；验证逐步 loss、有限梯度、峰值显存与原子 checkpoint 写入，不将它作为正式结果：
+- Web、SAT backbone 均可加载；dino.txt 图文前向输出有限值。
+- 可训练参数为 Web 106,644,737 / 866,611,713（12.306%），SAT 106,644,737 / 866,613,761（12.306%）。
+- 真实 ChatEarthNet batch 可读取为 `[16, 3, 224, 224]`，token 与前向正常。
+- Web 的固定 16 样本、无 queue、无增强 10-step 验证 loss 从 3.70285 降到 1.61173，所有 loss、梯度均有限。这只验证计算图和局部优化能力，**不构成泛化性能结论**。
+- checkpoint 含 config 快照、权重/manifest provenance、优化器、scheduler、RNG、sampler、queue 与 trainable state；resume 会校验运行身份。
+- `best.pt` 现在在 step 0 与所有 validation step 中选择；因此它是“该次 ChatEarthNet validation 最优”，而不是泛化任务的最优模型。
+- SAT 的 fast validation 使用 64 张前向后切回四个连续 16 张 loss group，故不改变已定义的 validation loss。旧 SAT pilot 的 `elapsed_seconds` 受变量遮蔽影响而失真；loss、checkpoint、resume 与模型权重不受影响。代码已修复并有回归测试。
 
-   ```bash
-   python tools/prepare_fixed_manifest.py \
-     --input assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77.jsonl \
-     --output assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77_fixed16.jsonl \
-     --limit 16 \
-     --audit-output assets/data/manifests/chatearthnet_35_train_10k_seed11_no_nodata_global77_fixed16.audit.json
-   dinotxt-rs-train --config configs/verify_web_10step.toml
-   ```
+## 4. 500-step 正式调度受限 pilot
 
-   该配置关闭随机裁剪、shuffle 和 negative queue，并以 `num_workers = 0` 重复同一物理 batch。验收产物为输出目录中的 `config.toml`、`provenance.json`、`metrics.jsonl`（恰好 10 条记录）、`step_0000010.pt` 和 `training_summary.json`；后者必须报告有限的首末 loss、梯度及峰值 CUDA allocated bytes。
-2. 初版完整训练清单的 Web 100-step 已通过结构性检查（数值、queue、step 50/100 checkpoint 与资产身份），但其 `in_batch_loss` 来自不同的随机样本和随机裁剪，前后窗口不可直接比较。保留该输出作为稳定性证据，不以它作优化趋势结论，也不修改已运行的不可变配置。
-3. 用固定监测 batch 重新运行独立的 Web 100-step 配置：
+两次 pilot 均使用未来正式实验的训练骨架：batch size 16、gradient accumulation 4、随机裁剪、shuffle、queue 4,096、最大学习率 `5e-5`、weight decay 0.01、warmup 250、设计总长度 5,000 optimizer steps。脚本仅运行到 500 step，因此它们是 pilot，不是正式 5,000-step 实验。
 
-   ```bash
-   bash scripts/run_web_100step_fixed_monitor.sh
-   ```
+每 50 step 对固定的 16,277 条 ChatEarthNet val 做无增强、无 queue 的 16 样本 InfoNCE；step 0 也是合法 `best.pt` 候选。训练 loss 含 queue，不能与无 queue validation loss 直接等同。
 
-   训练继续使用完整 9,969 条 `global77` 清单、随机裁剪、shuffle、`gradient_accumulation = 4` 和 `queue_size = 4096`。固定的 16 条 `global77` 样本仅在 step 0、10、…、100 时以 `model.eval()` 和无增强预处理计算不含 queue 的 loss。脚本会重新生成并 hash 校验此监测 manifest，且核验 `metrics.jsonl`、fixed-monitor 曲线、provenance、step 50/100 checkpoint 与原子写入结果。以 `verification_report.json` 的 `fixed_monitor_loss.mean_first_window` 与 `mean_last_window` 判断趋势；该字段的 `window_size` 为 3，分别比较 step 0/10/20 与 step 80/90/100。
-4. Web 与 SAT 的 100-step validation / best / resume 已完成，且工程门槛通过：两者均完整运行、queue 到 4,096、step 50→100 resume 与资产身份均通过。然而，Web validation loss 从 3.8231（step 0）变为 4.0567（step 100），SAT 从 3.8224 变为 4.5138；两者都仍劣于初始模型。此前实现只在 post-training step 选择 `best.pt`，故报告的 step 100 不是含 baseline 的全局最佳。该选择逻辑现已修正：训练会保存 `step_0000000.pt`，并让 `best.pt` 在 step 0 和全部 validation step 中全局选择。
+### 4.1 Web pilot
 
-5. 下一次服务器运行不是正式 5,000-step，而是 Web 500-step 的正式调度受限 pilot：
+- 输出：`outputs/m3_web_global77_formalschedule_500step_pilot_seed11`
+- 同域 validation：step 0 为 3.8230855；最佳 step 300 为 2.7668279（相对下降 27.63%）；step 500 为 2.7683333。
+- `best.pt` 指向 step 300，SHA-256 为 `62b15c393773a5a80078e3e5330a7f0858618718cde0632b1fe763f2131bb171`。
+- 训练与固定监测均为有限值；固定 16 样本 monitor 从 3.7621241 降至 2.7710328。
+- 该 run 曾真实从 step 250 恢复到 step 500；但用户在完成后删除 `step_0000250.pt`，所以恢复证据状态为 **degraded**。记录、step 0、step 500 与 best checkpoint 仍存在，不能据此伪造或宣称可重新验证 step-250 resume。
 
-   ```bash
-   bash scripts/run_web_500step_formal_schedule_pilot.sh
-   ```
+### 4.2 SAT pilot
 
-   配置的 `max_steps = 5000`、`warmup_steps = 250` 与未来正式训练一致，但脚本仅运行至 step 500，并在 step 250 保存、重启、严格恢复到 step 500。全量 validation 在 step 0、50、…、500 以固定 batch、无增强、无 queue 的 in-batch InfoNCE 按样本加权平均写入 `validation.jsonl`；`best.pt` 可以合法地指向 `step_0000000.pt`。报告必须确认 `target_steps = 5000`、`completed = false`、step 0/250/500 checkpoint、step 250 resume 和全局 best 选择。若 validation 从未低于 step 0，停止并调整受限配置，**不得**继续到 5,000。
+- 输出：`outputs/m3_sat_global77_formalschedule_500step_pilot_fastval_seed11`
+- 同域 validation：step 0 为 3.8234951；最佳且最终 step 500 为 2.7698112（相对下降约 27.56%）。
+- `best.pt` 指向 step 500，SHA-256 为 `1b209963843b6e14fa1413377e09b52b7c2023e2d83ab2e82ddb38f40b3c630d`。
+- 该 run 保留了要求的 checkpoint/resume 证据；恢复与资产身份已通过严格核验。
 
-6. Web pilot 已出现优于 step 0 的 validation：全量 loss 从 3.8231 降至 2.7668（step 300，−27.6%），并在 step 500 保持 2.7683。其 step-250 checkpoint 已被误删，故 resume 证据状态为 degraded；这不否定已记录的学习曲线，却不足以授权正式训练。下一步运行等价的 SAT 500-step pilot：
+### 4.3 此阶段能与不能得出的结论
 
-   ```bash
-   bash scripts/run_sat_500step_formal_schedule_pilot.sh
-   ```
+可以得出：当前训练设置在 ChatEarthNet validation 定义下改善了同域局部对比损失，且未发生 NaN、OOM 或明显的训练中断。
 
-   SAT 使用相同训练样本、训练 batch、梯度累积、queue、5,000-step 调度、250-step resume 和 16 样本 validation loss。为了缩短纯确定性 validation，它额外设置 `validation_forward_batch_size = 64` 与 4 个 validation workers；每个 64 样本前向仍严格切回连续的四组 16 样本计算 InfoNCE，故不改变 validation 指标。训练 DataLoader 继续为 `num_workers = 0`，不改变 resume 的随机数/采样语义。若 SAT 仍不改善，则把它作为 generic dino.txt initialization 的 domain-mismatch 诊断，而不是正式对照。
-7. 在正式训练前运行下游闭环：
+不能得出：它改善了通用遥感视觉语言能力、EuroSAT 零样本分类、RSICD 检索，或值得直接延长到 5,000 steps。step 500 时学习率仍约为 `4.97e-5`，接近峰值；这不是“已充分衰减、只需继续等待”的状态。
 
-   ```bash
-   bash scripts/run_downstream_pilot_evaluation.sh
-   ```
+## 5. 已完成的下游闭环与结果
 
-   脚本将从只读的原始 EuroSAT 目录派生、hash 固定全量 27,000 图像 manifest；从 SHA-256 已知的 `dataset_rsicd.json` 派生官方 `test` split 的多 caption retrieval manifest。它先运行 Web/SAT 官方 generic dino.txt 初始化，再严格加载 Web step-300 best 与 SAT step-500 best，分别写入 EuroSAT zero-shot Top-1/mean-per-class accuracy、RSICD I→T/T→I Recall@1/5/10 和 median rank。四份报告由同一 verifier 检查 manifest 一致性、指标范围、checkpoint 身份和 split，测试集不参与 checkpoint 选择。
+运行入口：
 
-   SAT fast-validation 实现中曾将 validation 计时起点变量与 loss 分组循环变量同名，造成 `elapsed_seconds` 失真；这只影响 SAT pilot 的耗时记录，不影响 loss、best、checkpoint 或 resume。现已更名并加入回归测试，任何新验证的耗时字段均正确。
-8. 当以上闭环完成后，才按统一配置运行 9,969（原 10k 候选）、50k 和全量的 Web/SAT 正式对照实验，并固定随机种子和报告指标。
+```bash
+bash scripts/run_downstream_pilot_evaluation.sh
+```
 
-正式实验前需要留存的证据包括：配置快照、代码 commit、每个 manifest 的 SHA-256、随机种子、硬件/软件环境、训练/验证曲线、最佳 checkpoint、恢复训练结果以及 EuroSAT/RSICD 指标。**在 `verification_report.json` 成功写出前，不得删除协议要求的任何 `step_*.pt`。** `best.pt` 只是当时全局最优 step checkpoint 的硬链接或副本，不能替代任意一个不同 step 的 resume checkpoint。若误删后需要盘点剩余证据，以只读诊断工具生成小报告（不会伪造 checkpoint）：
+输出：`outputs/m3_downstream_500step_pilot_seed11`。综合核验 `verification_report.json` 的 `status` 为 `complete`。
+
+评测是在预先固定的同一份数据、提示词与脚本上比较每个域的官方初始化和该域的 best checkpoint：
+
+- EuroSAT：全量 27,000 图像，manifest SHA-256 `dad37240dd85a5fd3f25f8c40daa5d5c3f083a66e52338f4f4aeab345347c7a2`；固定两个零样本 prompt template。
+- RSICD：官方 test split，1,093 图像、5,465 captions，manifest SHA-256 `4df6a9c8be0d3674ab5e7f9fa4c27ebdd352bf4d2f48746988ad535036187126`。
+- fine-tuned 模型在加载前校验 config 文本、训练 provenance、输入文件哈希、checkpoint `run_identity` 与 trainable parameter 名称。外部数据未用于 `best.pt` 选择。
+
+| 同一 backbone 域内的比较 | EuroSAT Top-1 | EuroSAT macro accuracy | RSICD mean recall |
+| --- | ---: | ---: | ---: |
+| Web 官方初始化 | 50.81% | 52.32% | 23.14% |
+| Web step-300 best | 9.26% | 10.00% | 11.04% |
+| SAT 官方初始化 | 7.09% | 7.11% | 0.46% |
+| SAT step-500 best | 11.11% | 10.00% | 0.35% |
+
+更细的信号：
+
+- Web RSICD image-to-text 的 R@1/R@5/R@10 从 9.88% / 23.24% / 33.30% 降至 0.27% / 0.37% / 0.91%。text-to-image 同样下降，但幅度较小（R@10：37.47% → 34.42%）。
+- Web EuroSAT 微调模型几乎总是输出 `PermanentCrop`：该类准确率为 100%，其他类接近 0。这是输出退化的强信号。
+- SAT 微调模型几乎总是输出 `AnnualCrop`。11.11% Top-1 恰好等于 3,000 / 27,000，因此不是有意义的分类提升；其他类别准确率为 0。
+
+这些绝对分数不是与外部论文直接可比的 SOTA 声明；它们首先是**在相同实现、相同数据与相同 backbone 内，初始化与微调 checkpoint 的受控差分**。在这个差分意义下，Web 发生了显著退化，SAT 也没有显示可靠改善。
+
+## 6. 当前科学判断与待验证假设
+
+### 已证实的事实
+
+1. 当前策略可降低 ChatEarthNet 同域 validation loss。
+2. 当前 best checkpoint 在已观测的 EuroSAT/RSICD 上没有展示可接受的泛化改善，Web 则明显恶化。
+3. 内部 validation loss 不能单独作为正式训练的放行条件。
+4. 目前的 500-step 结果不足以支持“继续到 5,000 steps 后自然恢复”的假设。
+
+### 合理但尚未证明的解释
+
+以下是要通过下一轮消融检验的假设，不应在论文中提前写成结论：
+
+1. **训练数据与目标分布过窄。** 当前只有 9,969 条 ChatEarthNet `global77` caption，模型可能拟合了该数据的语言和图像统计，未保持更广泛的遥感语义几何。
+2. **更新范围过大。** 一次更新约 1.066 亿参数，包括视觉对齐头、文本 projection、文本 Transformer 最后四层和 logit scale；对该数据规模而言，`5e-5` 可能过激。
+3. **文本 encoder 更新是风险来源之一。** 这是重要假设，而非已证实的单一根因。必须与“只训练视觉头”“只训练 projection”等消融比较。
+4. **优化/选择指标不充分。** 训练使用 4,096 negative queue，而 validation 使用连续 16 对的无 queue InfoNCE；后者可改善局部匹配，却未约束更大候选集合上的检索或零样本分类。
+5. **checkpoint 加载路径尚需端到端 parity 证明。** 当前严格身份校验强烈降低了加载错权重的可能性，但仍未执行“官方初始化与 `step_0000000.pt` 在同一输入上数值一致”的专门实验。因此不能把代码风险宣称为零。
+
+## 7. 下一步工作：按门槛推进
+
+### Gate A：先排除 checkpoint/evaluation 路径问题（不训练）
+
+下一项代码工作应实现并运行 **step-0 parity check**。它必须：
+
+1. 用同一 config 分别加载官方初始化与该 run 的 `step_0000000.pt`。
+2. 在固定、hash 记录的图像/文本输入上比较 image feature、text feature、logit scale 和最终指标。
+3. 报告最大绝对差、相对差、输入/配置/checkpoint SHA-256；以 BF16/浮点容差而非文字“看起来一致”判定通过。
+4. 只有 parity 通过，才能把第 5 节退化主要归因于训练策略；若不通过，停止新的训练，优先修复 checkpoint 保存/加载或评测路径。
+
+此检查应先对 Web step 0 运行，再对 SAT step 0 运行。它不是为了证明模型表现好，而是为了把“训练真的改变了模型”与“加载实现出错”严格区分开。
+
+### Gate B：建立不污染最终报告的开发协议
+
+EuroSAT 全量和 RSICD test 的汇总数值现在已经被观察到；从现在起，**不得用它们反复挑选学习率、可训练层或训练步数**，否则它们会变成调参集。
+
+在新训练前先写明并固定开发协议：
+
+- 优先使用此前未参与本项目决策的开发数据（例如 RSICD 的非 test split，前提是先核验官方 split 和泄漏情况）。
+- 若需要分类保持性指标，应使用一个与最终报告集明确分离的开发集；不要把已观测的全量 EuroSAT 再包装成“未见 test”。
+- ChatEarthNet val 继续只用于同域 checkpoint 选择；ChatEarthNet test、RSICD test 与已观测 EuroSAT 结果在最终报告中如实标注为已观测评估证据，而非新的调参依据。
+- 预先写下候选配置、选择指标、停止条件和最终一次性评测规则。
+
+### Gate C：从最小的可解释消融开始
+
+在 Gate A、B 完成之前，不运行 5,000-step 正式训练。随后以 Web 为优先（其初始化下游基线有较强可用信号），按一次只改变一个因素的顺序进行受限 pilot：
+
+1. **视觉头-only、低学习率**：冻结文本 Transformer、文本 projection 与 logit scale，仅训练视觉对齐头；最大学习率先降低一个数量级（候选 `5e-6`），保持数据与可复现/恢复协议。
+2. 若第一项未伤害预先指定的开发指标，再加入文本 projection；仍冻结文本 Transformer。
+3. 只有前两项通过，才逐步解冻文本末层（例如先 1 层，再到当前的 4 层），并将每个配置单独报告。
+4. 每个 pilot 保持 step 0 候选、全量同域 validation、resume、checkpoint 身份核验和参数数目记录；不得只保留 `best.pt`。
+
+每次 pilot 的放行条件必须同时包括：数值/恢复完整、同域 validation 不恶化、预先指定的开发保持性指标不出现分类单类塌缩或检索显著退化。达到这些条件后，才考虑 5,000-step 的单一预注册配置。
+
+### Gate D：正式实验与论文报告
+
+只有 Gate A–C 均通过后，正式实验才按固定协议覆盖清洗后的 9,969、嵌套 50k、全量 ChatEarthNet 规模，并以固定 seed / 必要时多 seed 报告均值与方差。最终报告应同时呈现：
+
+- 初始化基线、所有决定性超参数、可训练参数范围、数据规模、文本截断策略；
+- ChatEarthNet 同域曲线与 checkpoint 选择规则；
+- 预先冻结的外部评测指标、每个类别和检索方向；
+- 正向结果、无明显变化以及负向结果；
+- 对适用范围、数据单一性、caption 语义、灾难性遗忘和评测局限的讨论。
+
+若经过公平的 parity、消融和正式实验后仍未优于初始化，研究报告应明确写出这一事实及证据。一个可复现、控制变量充分的负向结果仍是毕业论文中有价值的实验结论；不得只保留“最好看”的曲线或删除不利 checkpoint。
+
+## 8. 当前禁止事项
+
+- 不要从现有 Web/SAT 500-step `best.pt` 继续到 5,000 step。
+- 不要把 ChatEarthNet validation loss 的下降表述为外部任务性能提升。
+- 不要用已观测的 RSICD test 或全量 EuroSAT 结果循环调参。
+- 不要因 `best.pt` 存在而删除 step 0、resume step、final step 或验证报告。
+- 不要更改已运行实验输出中的 config、metrics、provenance 或 checkpoint 来“修复历史”；修复应进入新的不可变 run。
+
+## 9. 产物保留、恢复与复现
+
+每个 run 至少保留以下文件，直到该 run 的完整核验报告和数据备份都已确认：
+
+```text
+config.toml
+provenance.json
+metrics.jsonl
+validation.jsonl
+fixed_monitor.jsonl             # 若配置启用
+resume_history.jsonl            # 若发生恢复
+step_0000000.pt
+每一个预定 resume checkpoint
+最终 step checkpoint
+best.pt
+training_summary.json
+verification_report.json
+```
+
+`best.pt` 只是被选中的某一步训练状态，不能恢复任意另一 step 的优化器、queue、sampler 或 RNG 状态。若发现产物缺失，先用只读工具盘点，绝不伪造恢复：
 
 ```bash
 OUTPUT=outputs/m3_web_global77_formalschedule_500step_pilot_seed11
@@ -232,7 +261,21 @@ python tools/inspect_training_artifacts.py \
   --report "$OUTPUT/recovery_report.json"
 ```
 
-## 7. 相关文档
+下游结果已下载到本地的：
 
-- `docs/DEVELOPMENT_ARCHITECTURE.md`：训练、检查点、评测与实验记录的目标架构。
-- `docs/PREPARE_HANDOFF.md`（本文）：截至 M2 的实际执行事实和下一阶段门槛。
+```text
+outputs/m3_downstream_500step_pilot_seed11/
+```
+
+其中四份任务报告与 `verification_report.json` 都应和论文实验记录一同备份。
+
+## 10. 相关代码与文档
+
+- `docs/DEVELOPMENT_ARCHITECTURE.md`：训练、checkpoint、验证和评测的目标架构。
+- `scripts/run_web_500step_formal_schedule_pilot.sh`：历史 Web 受限 pilot。
+- `scripts/run_sat_500step_formal_schedule_pilot.sh`：历史 SAT 受限 pilot。
+- `scripts/run_downstream_pilot_evaluation.sh`：已完成的下游闭环入口。
+- `src/dinotxt_rs/evaluation/`：EuroSAT 与 RSICD 的确定性评测实现。
+- `tools/inspect_training_artifacts.py`：缺失产物的只读诊断。
+
+下一位执行者应从 **Gate A 的 step-0 parity check** 开始，而不是启动任何长训练。
