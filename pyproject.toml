@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 dinotxt-rs-train = "dinotxt_rs.cli.train:main"
 dinotxt-rs-smoke = "dinotxt_rs.cli.smoke_model:main"
+dinotxt-rs-check-step0 = "dinotxt_rs.cli.check_step0_parity:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

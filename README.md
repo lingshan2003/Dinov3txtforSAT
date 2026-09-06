@@ -153,6 +153,14 @@ bash scripts/run_downstream_pilot_evaluation.sh
 
 该脚本将 EuroSAT 的 27,000 张图像按版本控制的 prompt ensemble 进行零样本分类，并只使用 RSICD 官方 `test` split 的全部原始 caption 计算 I→T/T→I Recall@1/5/10、median rank。每个微调 checkpoint 在加载前会严格比对其训练 `config.toml`、provenance 输入 hash 和 checkpoint identity；输出目录中的 `verification_report.json` 确认四组模型使用相同的 EuroSAT/RSICD manifests。测试集不会参与 `best.pt` 选择。
 
+现有下游结果显示当前训练策略损害了外部保持性，因此不得直接延长到 5,000 step。下一步先运行 Gate A，确认官方初始化与两个 run 的 `step_0000000.pt` 在相同固定输入上数值一致：
+
+```bash
+bash scripts/run_step0_parity_checks.sh
+```
+
+该脚本会顺序加载模型以控制显存，严格核对 checkpoint 身份及可训练参数指纹，并比较 token、图文特征、patch 特征、logit scale、相似度矩阵和无 queue 对比损失。Web 或 SAT 任一检查失败时都不得启动新训练；通过后，综合报告位于 `outputs/gate_a_step0_parity/verification_report.json`。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构
