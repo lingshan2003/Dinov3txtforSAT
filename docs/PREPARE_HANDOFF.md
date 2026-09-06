@@ -10,7 +10,7 @@
 - GitHub 仓库：`lingshan2003/Dinov3txtforSAT`（私有）
 - AutoDL 项目：`/root/autodl-tmp/Dinov3txtforSAT`
 - 本地项目：`/Users/wangyue/Documents/ChatGPT/Dinov3txtforSAT`
-- 服务器虚拟环境：`/root/autodl-tmp/Dinov3txtforSAT/.venv`（由 `uv` 管理）
+- 服务器虚拟环境：`/root/autodl-tmp/Dinov3txtforSAT/.venv`
 - DINOv3 固定源码：`/root/autodl-tmp/Dinov3txtforSAT/external/dinov3`
 - DINOv3 固定 commit：`6876159a11b4df116f30f667f8c9888617df0751`
 - 已验证服务器环境：Python 3.12.3、PyTorch `2.7.1+cu128`、CUDA runtime 12.8、RTX 4090、BF16 可用。
