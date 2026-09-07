@@ -169,6 +169,14 @@ bash scripts/run_m4_web_abc_100step_development.sh
 
 三组分别隔离低学习率、vision-head-only 更新范围及二者组合，并使用未参与最终报告的 RSICD `val` 检查外部能力保持性。固定变量、非劣效门槛与产物规则见 [docs/M4_DEVELOPMENT_PROTOCOL.md](docs/M4_DEVELOPMENT_PROTOCOL.md)。
 
+M4 通过后，只将低学习率 A/C 从原 step-100 checkpoint 严格恢复到 warmup 终点 step 250：
+
+```bash
+bash scripts/run_m5_web_ac_250step_development.sh
+```
+
+脚本保持 checkpoint 中记录的原训练 commit，不放宽恢复身份校验；它在临时 Git worktree 中执行当时的训练代码，并新增 step 150/200/250 的 ChatEarthNet validation 和 RSICD-val 评估。step 250 必须同时满足同域 validation 改善与 RSICD-val 非劣效，只有唯一 Pareto 候选才自动推荐进入 500 step。完整规则见 [docs/M5_DEVELOPMENT_PROTOCOL.md](docs/M5_DEVELOPMENT_PROTOCOL.md)。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构

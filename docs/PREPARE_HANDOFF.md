@@ -1,9 +1,32 @@
-# DINOv3 Remote-Sensing Text Alignment：截至 M3 的交接记录
+# DINOv3 Remote-Sensing Text Alignment：截至 M5 准备阶段的交接记录
 
-更新时间：2026-09-04
-当前阶段：M0（资产与环境）、M1（模型加载）、M2（数据协议）和 M3（受限训练、恢复、下游评测闭环）已完成。**当前 500-step 配置不具备启动 5,000-step 正式训练的资格。** 这不是项目失败，而是一个有效的负向实验结果：它证明当前训练目标、可训练范围和超参数组合虽能降低 ChatEarthNet 验证损失，却损害了已观测的外部零样本与检索能力。
+更新时间：2026-09-07
+当前阶段：M0–M4 已完成，M5 A/C 250-step 续跑代码已准备。**历史 `5e-5` 500-step 配置仍不具备启动 5,000-step 正式训练的资格。** M4 已证明将最大学习率降至 `5e-6` 后，100-step 阶段能够同时改善 ChatEarthNet validation 并保持 RSICD-val；下一步是在 warmup 终点 step 250 复核这一结论。
 
 本文取代此前版本的 `docs/PREPARE_HANDOFF.md`，并保留已核验资产、数据协议、已完成实验、已知局限与下一阶段门槛。除明确标为“假设”的内容外，所有数值均来自已保存的配置、输出报告或核验记录。
+
+## 0. 2026-09-07 当前状态（优先于后文的历史 M3 计划）
+
+Gate A 已在 Web/SAT 上通过：官方初始化与各自 `step_0000000.pt` 的图像特征、文本特征、
+logit scale、patch token、相似度和对比损失最大绝对误差均为 `0.0`。因此 checkpoint
+保存/加载与评测路径不是历史退化的解释。
+
+M4 Web A/B/C 100-step 开发实验已完成，RSICD 使用未参与最终报告的官方 val split（1,094
+images / 5,470 captions），ChatEarthNet train 与其文件/解码像素精确重叠均为零：
+
+| 实验 | 设置 | ChatEarthNet validation（0→100） | RSICD-val mean recall（official→100） | 决策 |
+| --- | --- | ---: | ---: | --- |
+| A | full scope，`5e-6` | 3.82028 → 3.71672 | 0.158775 → 0.159476 | 进入 M5 |
+| B | vision head only，`5e-5` | 3.82028 → 4.65263 | 0.158775 → 0.155058 | 停止 |
+| C | vision head only，`5e-6` | 3.82028 → 3.76396 | 0.158775 → 0.158227 | 进入 M5 对照 |
+
+当前证据首先指向学习率过高，而不是“只要更新文本 encoder 就必然退化”。A 在两个指标上均
+暂时优于 C，但差距小且只有 seed 11，不能据此宣称文本塔微调已统计显著胜出。
+
+M5 使用 `scripts/run_m5_web_ac_250step_development.sh`，从 A/C 原始 step-100 checkpoint
+严格恢复到 step 250，在 150/200/250 同时记录 ChatEarthNet validation 与 RSICD-val。其双硬
+门槛、Pareto 推荐规则及历史 commit worktree 恢复方式见 `docs/M5_DEVELOPMENT_PROTOCOL.md`。
+M5 只授予单一候选进入 500-step 开发实验的资格，仍不授予 5,000-step 正式训练资格。
 
 ## 1. 项目与运行环境
 
@@ -33,6 +56,8 @@ git pull
 | `4569b14` | 缺失训练产物的只读恢复诊断 |
 | `b2a68dd` | SAT 500-step pilot 与加速但等价的 validation forward |
 | `1f58343` | 修复 validation 计时变量遮蔽；增加 EuroSAT/RSICD 下游评测闭环 |
+| `a81e8e0` | Gate A step-0 parity 对应的交接状态 |
+| `13b254e` | M4 Web A/B/C 100-step 消融、RSICD-val 与泄漏审计闭环 |
 
 ## 2. 已核验资产
 
@@ -173,7 +198,7 @@ bash scripts/run_downstream_pilot_evaluation.sh
 2. **更新范围过大。** 一次更新约 1.066 亿参数，包括视觉对齐头、文本 projection、文本 Transformer 最后四层和 logit scale；对该数据规模而言，`5e-5` 可能过激。
 3. **文本 encoder 更新是风险来源之一。** 这是重要假设，而非已证实的单一根因。必须与“只训练视觉头”“只训练 projection”等消融比较。
 4. **优化/选择指标不充分。** 训练使用 4,096 negative queue，而 validation 使用连续 16 对的无 queue InfoNCE；后者可改善局部匹配，却未约束更大候选集合上的检索或零样本分类。
-5. **checkpoint 加载路径尚需端到端 parity 证明。** 当前严格身份校验强烈降低了加载错权重的可能性，但仍未执行“官方初始化与 `step_0000000.pt` 在同一输入上数值一致”的专门实验。因此不能把代码风险宣称为零。
+5. **checkpoint 加载路径已经过端到端 parity 证明。** Web/SAT 的官方初始化与 `step_0000000.pt` 在固定输入上的全部受检张量和损失完全一致；历史退化来自训练后的真实参数变化。
 
 ## 7. 下一步工作：按门槛推进
 
@@ -278,4 +303,4 @@ outputs/m3_downstream_500step_pilot_seed11/
 - `src/dinotxt_rs/evaluation/`：EuroSAT 与 RSICD 的确定性评测实现。
 - `tools/inspect_training_artifacts.py`：缺失产物的只读诊断。
 
-下一位执行者应从 **Gate A 的 step-0 parity check** 开始，而不是启动任何长训练。
+下一位执行者应运行 **M5 A/C 250-step 开发续跑**，而不是重跑 Gate A、继续 B，或启动任何 5,000-step 长训练。
