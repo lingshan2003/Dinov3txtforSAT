@@ -17,7 +17,12 @@ from dinotxt_rs.evaluation.common import (
 )
 
 
-def load_rsicd_records(path: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def load_rsicd_records(
+    path: Path, *, expected_split: str = "test"
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    expected_split = expected_split.lower()
+    if expected_split not in {"train", "val", "test"}:
+        raise ValueError("RSICD expected_split must be train, val, or test")
     by_image: dict[str, dict[str, str]] = {}
     captions: list[dict[str, str]] = []
     seen_caption_ids: set[str] = set()
@@ -30,8 +35,10 @@ def load_rsicd_records(path: Path) -> tuple[list[dict[str, str]], list[dict[str,
             raise ValueError(f"{path}:{line_number}: missing a required RSICD field")
         if value["id"] in seen_caption_ids:
             raise ValueError(f"{path}:{line_number}: duplicate caption id {value['id']!r}")
-        if value["split"] != "test" or value["source"] != "RSICD":
-            raise ValueError(f"{path}:{line_number}: retrieval must use RSICD test only")
+        if value["split"].lower() != expected_split or value["source"] != "RSICD":
+            raise ValueError(
+                f"{path}:{line_number}: expected RSICD split={expected_split!r} only"
+            )
         image_path = Path(value["image"])
         if not image_path.is_file():
             raise FileNotFoundError(f"{path}:{line_number}: image does not exist: {image_path}")
@@ -143,8 +150,10 @@ def evaluate_rsicd_retrieval(
     batch_size: int,
     num_workers: int,
     retrieval_chunk_size: int,
+    split: str = "test",
 ) -> dict[str, Any]:
-    image_records, caption_records = load_rsicd_records(manifest)
+    split = split.lower()
+    image_records, caption_records = load_rsicd_records(manifest, expected_split=split)
     image_features, image_scale, image_stats = encode_images(
         evaluation_model,
         image_records,
@@ -169,7 +178,7 @@ def evaluate_rsicd_retrieval(
         "task": "rsicd_image_text_retrieval",
         "manifest": manifest_metadata(manifest),
         "model": evaluation_model.metadata,
-        "split": "test",
+        "split": split,
         "metrics": metrics,
         "counts": {"images": len(image_records), "captions": len(caption_records)},
         "encoding": {

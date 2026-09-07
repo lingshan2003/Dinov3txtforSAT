@@ -8,7 +8,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 
 from dinotxt_rs.config import Config, DataConfig, ExperimentConfig, ModelConfig, TrainConfig
-from dinotxt_rs.training.trainer import _evaluate_validation, train
+from dinotxt_rs.training.trainer import _evaluate_validation, _set_training_mode, train
 
 
 class TinyTokenizer:
@@ -31,6 +31,22 @@ class TinyModel(torch.nn.Module):
         return image_features, text_features, self.logit_scale.exp(), None, None
 
 
+class ModePolicyModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.visual_model = torch.nn.Module()
+        self.visual_model.backbone = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Dropout())
+        self.visual_model.head = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Dropout())
+        self.text_model = torch.nn.Module()
+        self.text_model.backbone = torch.nn.Module()
+        self.text_model.backbone.blocks = torch.nn.ModuleList(
+            [torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Dropout()) for _ in range(2)]
+        )
+        self.text_model.backbone.ln_final = torch.nn.LayerNorm(2)
+        self.text_model.head = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Dropout())
+        self.logit_scale = torch.nn.Parameter(torch.tensor(0.0))
+
+
 def _write_manifest(path: Path, image_paths: list[Path]) -> None:
     records = [
         {
@@ -43,6 +59,46 @@ def _write_manifest(path: Path, image_paths: list[Path]) -> None:
         for index, image_path in enumerate(image_paths)
     ]
     path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+
+
+def test_training_mode_keeps_frozen_text_tower_in_eval_for_vision_head_only() -> None:
+    model = ModePolicyModel()
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    for parameter in model.visual_model.head.parameters():
+        parameter.requires_grad_(True)
+
+    _set_training_mode(model)
+
+    assert model.training
+    assert not model.visual_model.backbone.training
+    assert model.visual_model.head.training
+    assert not model.text_model.training
+    assert not model.text_model.backbone.training
+    assert not model.text_model.head.training
+
+
+def test_training_mode_preserves_partial_text_finetuning_semantics() -> None:
+    model = ModePolicyModel()
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    for parameter in model.text_model.backbone.blocks[-1].parameters():
+        parameter.requires_grad_(True)
+    for parameter in model.text_model.backbone.ln_final.parameters():
+        parameter.requires_grad_(True)
+    for parameter in model.text_model.head.parameters():
+        parameter.requires_grad_(True)
+
+    _set_training_mode(model)
+
+    assert model.text_model.training
+    assert model.text_model.backbone.training
+    # A partially trainable Transformer stays in train mode as one computation graph;
+    # the fully frozen head-only case above is the new behavior under test.
+    assert model.text_model.backbone.blocks[0].training
+    assert model.text_model.backbone.blocks[1].training
+    assert model.text_model.backbone.ln_final.training
+    assert model.text_model.head.training
 
 
 def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> None:

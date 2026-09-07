@@ -48,6 +48,7 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         retrieval_chunk_size=args.retrieval_chunk_size,
+        split="test",
     )
     write_json_atomic(args.rsicd_output, rsicd)
     print(f"eurosat_report={args.eurosat_output}")

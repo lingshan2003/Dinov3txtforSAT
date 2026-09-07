@@ -161,6 +161,14 @@ bash scripts/run_step0_parity_checks.sh
 
 该脚本会顺序加载模型以控制显存，严格核对 checkpoint 身份及可训练参数指纹，并比较 token、图文特征、patch 特征、logit scale、相似度矩阵和无 queue 对比损失。Web 或 SAT 任一检查失败时都不得启动新训练；通过后，综合报告位于 `outputs/gate_a_step0_parity/verification_report.json`。
 
+Gate A 通过后，按预注册的开发协议运行 Web A/B/C 三组 100-step 消融：
+
+```bash
+bash scripts/run_m4_web_abc_100step_development.sh
+```
+
+三组分别隔离低学习率、vision-head-only 更新范围及二者组合，并使用未参与最终报告的 RSICD `val` 检查外部能力保持性。固定变量、非劣效门槛与产物规则见 [docs/M4_DEVELOPMENT_PROTOCOL.md](docs/M4_DEVELOPMENT_PROTOCOL.md)。
+
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
 ## 当前代码结构

@@ -84,3 +84,22 @@ def test_load_accelerated_validation_sat_pilot_config() -> None:
     assert config.data.validation_prefetch_factor == 4
     assert config.train.max_steps == 5000
     assert config.train.warmup_steps == 250
+
+
+def test_load_m4_abc_configs() -> None:
+    a = load_config(Path("configs/m4_web_a_fullscope_lr5e6_100step.toml"))
+    b = load_config(Path("configs/m4_web_b_visionhead_lr5e5_100step.toml"))
+    c = load_config(Path("configs/m4_web_c_visionhead_lr5e6_100step.toml"))
+
+    assert a.model.text_last_k == 4
+    assert a.model.train_text_projection and a.model.train_logit_scale
+    assert a.train.learning_rate == 5e-6
+    for config in (b, c):
+        assert config.model.text_last_k == 0
+        assert config.model.train_vision_head
+        assert not config.model.train_text_projection
+        assert not config.model.train_logit_scale
+        assert config.data.validation_forward_batch_size == 64
+        assert config.train.max_steps == 5000
+    assert b.train.learning_rate == 5e-5
+    assert c.train.learning_rate == 5e-6

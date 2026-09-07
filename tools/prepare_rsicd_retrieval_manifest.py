@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Expand the official RSICD test captions into a deterministic retrieval manifest."""
+"""Expand one official RSICD split into a deterministic retrieval manifest."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ IDENTIFIER_FIELDS = ("imgid", "image_id", "id")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build an expanded RSICD test retrieval manifest from official annotations"
+        description="Build an expanded RSICD retrieval manifest from official annotations"
     )
     parser.add_argument("--annotations", required=True, type=Path)
     parser.add_argument("--images-root", required=True, type=Path)

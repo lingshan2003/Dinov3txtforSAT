@@ -98,6 +98,23 @@ def _set_training_mode(model: Any) -> None:
     model.train()
     # The frozen backbone must remain deterministic while the alignment modules train.
     model.visual_model.backbone.eval()
+    # A frozen tower must also stay in eval mode. ``requires_grad=False`` alone does not
+    # disable dropout or other training-time behavior, so head-only experiments need an
+    # explicit mode policy in addition to the parameter freeze policy.
+    vision_head = getattr(model.visual_model, "head", None)
+    if vision_head is not None:
+        vision_head.train(any(parameter.requires_grad for parameter in vision_head.parameters()))
+    text_model = getattr(model, "text_model", None)
+    if text_model is None:
+        return
+    text_model.train(any(parameter.requires_grad for parameter in text_model.parameters()))
+    text_backbone = text_model.backbone
+    text_backbone.train(
+        any(parameter.requires_grad for parameter in text_backbone.parameters())
+    )
+    text_model.head.train(
+        any(parameter.requires_grad for parameter in text_model.head.parameters())
+    )
 
 
 def _load_fixed_monitor_batch(config: Config) -> dict[str, Any] | None:
