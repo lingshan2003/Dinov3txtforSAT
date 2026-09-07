@@ -1,32 +1,28 @@
-# DINOv3 Remote-Sensing Text Alignment：截至 M5 准备阶段的交接记录
+# DINOv3 Remote-Sensing Text Alignment：M3 后的方法反思阶段交接记录
 
 更新时间：2026-09-07
-当前阶段：M0–M4 已完成，M5 A/C 250-step 续跑代码已准备。**历史 `5e-5` 500-step 配置仍不具备启动 5,000-step 正式训练的资格。** M4 已证明将最大学习率降至 `5e-6` 后，100-step 阶段能够同时改善 ChatEarthNet validation 并保持 RSICD-val；下一步是在 warmup 终点 step 250 复核这一结论。
+当前阶段：M0（资产）、M1（推理）、M2（数据）和 M3（Web 10k MVP 工程闭环）已完成；项目暂停在 **M3 之后、正式 M4 RQ1 之前的方法诊断与反思阶段**。现有训练实现具备可复现、可恢复、可评测的工程闭环，但尚未得到一个能够同时改善 ChatEarthNet validation 并保持外部能力的稳定训练方法，因此不宣称进入后续正式里程碑。
 
-本文取代此前版本的 `docs/PREPARE_HANDOFF.md`，并保留已核验资产、数据协议、已完成实验、已知局限与下一阶段门槛。除明确标为“假设”的内容外，所有数值均来自已保存的配置、输出报告或核验记录。
+本文取代此前版本的 `docs/PREPARE_HANDOFF.md`，集中保留已核验资产、数据协议、已完成实验、负向结果和当前认识边界。除明确标为“解释”或“未决问题”的内容外，所有数值均来自已保存的配置、输出报告或核验记录。本文不制定下一轮实验方案。
 
-## 0. 2026-09-07 当前状态（优先于后文的历史 M3 计划）
+## 0. 阶段命名纠正
 
-Gate A 已在 Web/SAT 上通过：官方初始化与各自 `step_0000000.pt` 的图像特征、文本特征、
-logit scale、patch token、相似度和对比损失最大绝对误差均为 `0.0`。因此 checkpoint
-保存/加载与评测路径不是历史退化的解释。
+`docs/DEVELOPMENT_ARCHITECTURE.md` 第 12 节规定的唯一阶段顺序是：
 
-M4 Web A/B/C 100-step 开发实验已完成，RSICD 使用未参与最终报告的官方 val split（1,094
-images / 5,470 captions），ChatEarthNet train 与其文件/解码像素精确重叠均为零：
+1. `M0 assets`；
+2. `M1 inference`；
+3. `M2 data`；
+4. `M3 MVP`：Web 10k 训练稳定、retrieval 指标可计算；
+5. `M4 RQ1`：SAT 10k 严格对照；
+6. `M5 scale`：50k/full；
+7. `M6 RQ2`：自然/结构化/层级文本；
+8. `M7 RQ3`：local alignment。
 
-| 实验 | 设置 | ChatEarthNet validation（0→100） | RSICD-val mean recall（official→100） | 决策 |
-| --- | --- | ---: | ---: | --- |
-| A | full scope，`5e-6` | 3.82028 → 3.71672 | 0.158775 → 0.159476 | 进入 M5 |
-| B | vision head only，`5e-5` | 3.82028 → 4.65263 | 0.158775 → 0.155058 | 停止 |
-| C | vision head only，`5e-6` | 3.82028 → 3.76396 | 0.158775 → 0.158227 | 进入 M5 对照 |
-
-当前证据首先指向学习率过高，而不是“只要更新文本 encoder 就必然退化”。A 在两个指标上均
-暂时优于 C，但差距小且只有 seed 11，不能据此宣称文本塔微调已统计显著胜出。
-
-M5 使用 `scripts/run_m5_web_ac_250step_development.sh`，从 A/C 原始 step-100 checkpoint
-严格恢复到 step 250，在 150/200/250 同时记录 ChatEarthNet validation 与 RSICD-val。其双硬
-门槛、Pareto 推荐规则及历史 commit worktree 恢复方式见 `docs/M5_DEVELOPMENT_PROTOCOL.md`。
-M5 只授予单一候选进入 500-step 开发实验的资格，仍不授予 5,000-step 正式训练资格。
+此前文档和产物中称为 “M4 Web A/B/C” 与 “M5 Web A/C” 的两轮工作并不符合上述含义。它们
+都是历史 500-step 退化之后、M3 结项后的 Web 训练策略诊断，不能宣称完成了规范中的
+`M4 RQ1` 或进入了 `M5 scale`。相关脚本、配置和输出目录已经参与实际运行，其名字作为不可变
+实验标识保留；后文统一称为“100-step A/B/C 诊断”和“250-step A/C 续跑诊断”。规范中的
+`M4`、`M5` 仍保持原定义。
 
 ## 1. 项目与运行环境
 
@@ -57,7 +53,8 @@ git pull
 | `b2a68dd` | SAT 500-step pilot 与加速但等价的 validation forward |
 | `1f58343` | 修复 validation 计时变量遮蔽；增加 EuroSAT/RSICD 下游评测闭环 |
 | `a81e8e0` | Gate A step-0 parity 对应的交接状态 |
-| `13b254e` | M4 Web A/B/C 100-step 消融、RSICD-val 与泄漏审计闭环 |
+| `13b254e` | 历史误命名的 100-step Web A/B/C 诊断、RSICD-val 与泄漏审计闭环 |
+| `cfd087a` | 历史误命名的 250-step A/C 续跑诊断与验收器 |
 
 ## 2. 已核验资产
 
@@ -181,83 +178,144 @@ bash scripts/run_downstream_pilot_evaluation.sh
 
 这些绝对分数不是与外部论文直接可比的 SOTA 声明；它们首先是**在相同实现、相同数据与相同 backbone 内，初始化与微调 checkpoint 的受控差分**。在这个差分意义下，Web 发生了显著退化，SAT 也没有显示可靠改善。
 
-## 6. 当前科学判断与待验证假设
+## 6. M3 后、M4 前的训练策略诊断
 
-### 已证实的事实
+### 6.1 Step-0 parity：排除保存、加载和评测路径错误
 
-1. 当前策略可降低 ChatEarthNet 同域 validation loss。
-2. 当前 best checkpoint 在已观测的 EuroSAT/RSICD 上没有展示可接受的泛化改善，Web 则明显恶化。
-3. 内部 validation loss 不能单独作为正式训练的放行条件。
-4. 目前的 500-step 结果不足以支持“继续到 5,000 steps 后自然恢复”的假设。
+Gate A 已在 Web/SAT 上通过。它在固定输入上分别加载官方初始化与对应
+`step_0000000.pt`，核对 checkpoint 身份与可训练参数指纹，并比较 token、图像/文本特征、
+vision-head patch token、backbone patch token、logit scale、相似度矩阵和无 queue 对比损失。
+两种 backbone 的全部最大绝对误差均为 `0.0`，综合状态为 `complete`。
 
-### 合理但尚未证明的解释
+这证明 step 0 checkpoint 与官方初始化在当前受检路径上完全一致。它不能证明训练方法正确，
+但排除了“历史退化只是保存、加载或评测接错权重”这一解释。
 
-以下是要通过下一轮消融检验的假设，不应在论文中提前写成结论：
+### 6.2 开发保持集与泄漏审计
 
-1. **训练数据与目标分布过窄。** 当前只有 9,969 条 ChatEarthNet `global77` caption，模型可能拟合了该数据的语言和图像统计，未保持更广泛的遥感语义几何。
-2. **更新范围过大。** 一次更新约 1.066 亿参数，包括视觉对齐头、文本 projection、文本 Transformer 最后四层和 logit scale；对该数据规模而言，`5e-5` 可能过激。
-3. **文本 encoder 更新是风险来源之一。** 这是重要假设，而非已证实的单一根因。必须与“只训练视觉头”“只训练 projection”等消融比较。
-4. **优化/选择指标不充分。** 训练使用 4,096 negative queue，而 validation 使用连续 16 对的无 queue InfoNCE；后者可改善局部匹配，却未约束更大候选集合上的检索或零样本分类。
-5. **checkpoint 加载路径已经过端到端 parity 证明。** Web/SAT 的官方初始化与 `step_0000000.pt` 在固定输入上的全部受检张量和损失完全一致；历史退化来自训练后的真实参数变化。
+EuroSAT 全量和 RSICD test 已在历史下游诊断中被观察，不再用于选择学习率、更新范围或步数。
+两轮后续诊断使用 RSICD 官方 val split：
 
-## 7. 下一步工作：按门槛推进
+- manifest：`assets/data/manifests/rsicd_val_retrieval_v1.jsonl`；
+- SHA-256：`7e45a77872a488a487cea95657a24618f6008231305eee1b4fa1854b4e5cedc8`；
+- 1,094 images / 5,470 captions；
+- 官方 Web 初始化 mean recall：`0.15877513773739338`；
+- 与 9,969 条 ChatEarthNet train 的文件 SHA-256 和解码 RGB 像素 SHA-256 精确交集均为零。
 
-### Gate A：先排除 checkpoint/evaluation 路径问题（不训练）
+该审计不检测感知近重复，因此“零重叠”只限于字节完全一致或解码后像素完全一致。
 
-下一项代码工作应实现并运行 **step-0 parity check**。它必须：
+### 6.3 100-step A/B/C 诊断（历史产物名含 `m4`）
 
-1. 用同一 config 分别加载官方初始化与该 run 的 `step_0000000.pt`。
-2. 在固定、hash 记录的图像/文本输入上比较 image feature、text feature、logit scale 和最终指标。
-3. 报告最大绝对差、相对差、输入/配置/checkpoint SHA-256；以 BF16/浮点容差而非文字“看起来一致”判定通过。
-4. 只有 parity 通过，才能把第 5 节退化主要归因于训练策略；若不通过，停止新的训练，优先修复 checkpoint 保存/加载或评测路径。
+共同设置为 Web backbone、seed 11、physical batch 16、gradient accumulation 4、queue 4,096、
+设计总长 5,000 step、warmup 250，并由命令行限制在 step 100。训练使用 9,969 条
+ChatEarthNet train；同域 validation 使用固定的 16,277 条 ChatEarthNet val。step 50 执行一次
+严格 resume，保留 step 0/50/100、validation、fixed monitor、best 和恢复证据。
 
-此检查应先对 Web step 0 运行，再对 SAT step 0 运行。它不是为了证明模型表现好，而是为了把“训练真的改变了模型”与“加载实现出错”严格区分开。
+| 标签 | 可训练范围 | 最大 LR | 可训练参数 |
+| --- | --- | ---: | ---: |
+| A | vision head + text projection + text last-4 + logit scale | `5e-6` | 106,644,737 |
+| B | vision head only | `5e-5` | 25,326,336 |
+| C | vision head only | `5e-6` | 25,326,336 |
 
-### Gate B：建立不污染最终报告的开发协议
+vision-head-only 时，整个 text tower、text projection、logit scale 和视觉 backbone 均冻结并保持
+eval，只有 `visual_model.head` 处于 train。
 
-EuroSAT 全量和 RSICD test 的汇总数值现在已经被观察到；从现在起，**不得用它们反复挑选学习率、可训练层或训练步数**，否则它们会变成调参集。
+| 标签 | ChatEarthNet val step 0 | step 50 | step 100 | RSICD-val step 50 | step 100 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 3.820279 | 3.728249 | 3.716718 | 0.158105 | 0.159476 |
+| B | 3.820279 | 3.799968 | 4.652625 | 0.159263 | 0.155058 |
+| C | 3.820279 | 3.792764 | 3.763962 | 0.159293 | 0.158227 |
 
-在新训练前先写明并固定开发协议：
+预注册的 step-100 硬门槛只要求 RSICD-val mean recall 不低于官方初始化超过 `0.01` 绝对值，
+因为 step 100 尚在 warmup 内，ChatEarthNet 是否改善当时只记录、不参与资格判断。因此 A、B、C
+形式上全部通过，按 step-100 RSICD-val 排序为 A、C、B，A 被选为首位；鉴于 B 的同域 loss 已
+明显反弹，实际只继续了 A 和 C。
 
-- 优先使用此前未参与本项目决策的开发数据（例如 RSICD 的非 test split，前提是先核验官方 split 和泄漏情况）。
-- 若需要分类保持性指标，应使用一个与最终报告集明确分离的开发集；不要把已观测的全量 EuroSAT 再包装成“未见 test”。
-- ChatEarthNet val 继续只用于同域 checkpoint 选择；ChatEarthNet test、RSICD test 与已观测 EuroSAT 结果在最终报告中如实标注为已观测评估证据，而非新的调参依据。
-- 预先写下候选配置、选择指标、停止条件和最终一次性评测规则。
+这项规则忠实执行了预注册条件，但结果也暴露了它的局限：一个同域指标已经明显恶化的配置仍会
+得到形式资格。step-100 时 A 的双指标领先也只是单 seed、warmup 中途的瞬时结果，不能支持
+“更新文本塔优于冻结文本塔”的稳定结论。
 
-### Gate C：从最小的可解释消融开始
+综合输出位于 `outputs/m4_web_abc_100step_development_seed11/verification_report.json`。其中
+`m4` 是历史误命名的实验标识，不代表规范中的 `M4 RQ1`。
 
-在 Gate A、B 完成之前，不运行 5,000-step 正式训练。随后以 Web 为优先（其初始化下游基线有较强可用信号），按一次只改变一个因素的顺序进行受限 pilot：
+### 6.4 250-step A/C 续跑诊断（历史产物名含 `m5`）
 
-1. **视觉头-only、低学习率**：冻结文本 Transformer、文本 projection 与 logit scale，仅训练视觉对齐头；最大学习率先降低一个数量级（候选 `5e-6`），保持数据与可复现/恢复协议。
-2. 若第一项未伤害预先指定的开发指标，再加入文本 projection；仍冻结文本 Transformer。
-3. 只有前两项通过，才逐步解冻文本末层（例如先 1 层，再到当前的 4 层），并将每个配置单独报告。
-4. 每个 pilot 保持 step 0 候选、全量同域 validation、resume、checkpoint 身份核验和参数数目记录；不得只保留 `best.pt`。
+A、C 从各自经过验证的 `step_0000100.pt` 严格恢复到 warmup 终点 step 250；新增
+step 150/200/250 checkpoint、ChatEarthNet validation 和 RSICD-val 评测。checkpoint 身份包含
+产生 100-step run 的项目 commit `13b254e55910411bffc6be647022bcabc181b54d`。续跑没有放宽
+身份校验，而是在临时 Git worktree 中执行该 commit 的训练代码，当前目录只复用原数据、权重和
+输出。
 
-每次 pilot 的放行条件必须同时包括：数值/恢复完整、同域 validation 不恶化、预先指定的开发保持性指标不出现分类单类塌缩或检索显著退化。达到这些条件后，才考虑 5,000-step 的单一预注册配置。
+step-250 的预注册资格要求同时满足：ChatEarthNet validation 严格低于 step 0；RSICD-val
+mean recall 不低于官方初始化超过 `0.01` 绝对值（阈值 `0.14877513773739337`）。若有候选通过，
+只有 step-250 两指标上的 Pareto 前沿唯一时才自动推荐；两组各有取舍时必须返回人工复核，不用
+test 集打破平局。结果如下：
 
-### Gate D：正式实验与论文报告
+| 标签 | ChatEarthNet val step 0 | 100 | 150 | 200 | 250 | 同域通过 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| A | 3.820279 | 3.716718 | 4.139433 | 5.615601 | 6.323068 | 否 |
+| C | 3.820279 | 3.763962 | 3.816468 | 3.993479 | 4.285517 | 否 |
 
-只有 Gate A–C 均通过后，正式实验才按固定协议覆盖清洗后的 9,969、嵌套 50k、全量 ChatEarthNet 规模，并以固定 seed / 必要时多 seed 报告均值与方差。最终报告应同时呈现：
+| 标签 | RSICD official | 100 | 150 | 200 | 250 | 保持性通过 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| A | 0.158775 | 0.159476 | 0.157343 | 0.152559 | 0.136015 | 否 |
+| C | 0.158775 | 0.158227 | 0.158836 | 0.158836 | 0.156886 | 是 |
 
-- 初始化基线、所有决定性超参数、可训练参数范围、数据规模、文本截断策略；
-- ChatEarthNet 同域曲线与 checkpoint 选择规则；
-- 预先冻结的外部评测指标、每个类别和检索方向；
-- 正向结果、无明显变化以及负向结果；
-- 对适用范围、数据单一性、caption 语义、灾难性遗忘和评测局限的讨论。
+A 到 step 250 的 ChatEarthNet loss 相对 step 0 增加 `2.502789`，RSICD-val 相对官方下降
+`0.022761`，且从 step 100 起逐点下降。C 的 RSICD-val 只比官方低 `0.001889`，没有形成从
+step 100 起的逐点下降，并通过保持性门槛，但 ChatEarthNet loss 相对 step 0 增加
+`0.465238`。因此没有候选同时通过双门槛，
+`eligible_for_500step=[]`、`recommended_for_500step=null`、决策状态为
+`no_candidate_passed`。
 
-若经过公平的 parity、消融和正式实验后仍未优于初始化，研究报告应明确写出这一事实及证据。一个可复现、控制变量充分的负向结果仍是毕业论文中有价值的实验结论；不得只保留“最好看”的曲线或删除不利 checkpoint。
+综合输出位于 `outputs/m5_web_ac_250step_development_seed11/verification_report.json`。其中
+`m5` 同样只是历史误命名的实验标识，不代表规范中的 `M5 scale`。
 
-## 8. 当前禁止事项
+## 7. 当前证据、反思与未决问题
 
-- 不要从现有 Web/SAT 500-step `best.pt` 继续到 5,000 step。
-- 不要把 ChatEarthNet validation loss 的下降表述为外部任务性能提升。
-- 不要用已观测的 RSICD test 或全量 EuroSAT 结果循环调参。
-- 不要因 `best.pt` 存在而删除 step 0、resume step、final step 或验证报告。
-- 不要更改已运行实验输出中的 config、metrics、provenance 或 checkpoint 来“修复历史”；修复应进入新的不可变 run。
+### 已由实验支持的事实
+
+1. **工程路径正确不等于训练方法正确。** Step-0 parity、严格 resume、有限 loss/梯度和一致的
+   输入身份均已通过，但训练后的能力仍然可以真实退化。
+2. **历史 `5e-5` 配置不可接受。** 它虽降低 ChatEarthNet validation，却使 Web 的 EuroSAT 和
+   RSICD test 严重退化；vision-head-only 的 100-step B 也出现同域反弹。
+3. **把最大 LR 降至 `5e-6` 只延迟了退化，没有解决它。** A、C 在 step 100 暂时改善，继续到
+   step 250 后同域 validation 均高于初始化。
+4. **冻结文本塔显著减轻外部遗忘，但不是充分条件。** C 在 step 250 仍保持 RSICD-val，而 A
+   明显下降；然而 C 的 ChatEarthNet validation 仍然恶化。
+5. **100-step 的局部排名不能代表稳定策略。** 当时 A 同时领先 C，但延长到 250 step 后 A 的
+   两项退化都远大于 C。单 seed、warmup 中途的微小差异不能支撑架构结论。
+6. **ChatEarthNet validation 与外部能力必须同时观察。** 历史 500-step 结果证明同域 loss 改善
+   可以伴随外部能力坍塌；250-step C 又证明外部保持也不等于同域目标改善。
+
+### 只能视为解释、不能写成结论
+
+当前 scheduler 在前 250 step 将 LR 线性升至峰值；`5e-6` 配置在 step 50/100/150/200/250
+对应约 `1e-6/2e-6/3e-6/4e-6/5e-6`。A、C 都在升温前段改善、后段反转，这使学习率轨迹成为
+重要嫌疑，但步数、累计更新和 LR 同时变化，现有实验没有将它们解耦，不能断言存在一个已知的
+“安全 LR 阈值”。
+
+同样尚未回答的问题包括：4,096 negative queue 与无 queue validation 的目标差异；9,969 条
+单一数据源及 caption 分布是否足以支撑对齐；AdamW、weight decay、logit scale 和不同模块是否
+需要不同优化强度；全局 InfoNCE 是否与研究目标匹配；以及外部指标的小幅变化有多少来自 seed
+方差。现有 A/B/C 并不是完整的正交消融，不能从中把单一根因归到文本 encoder、视觉头或学习率。
+
+当前应把“方法设计本身是否建立在可靠经验上”视为开放问题。继续增加自造配置之前，需要系统
+回到相关领域已有工作的训练规模、冻结策略、参数分组、学习率、warmup、负样本构造、灾难性
+遗忘控制和评测协议中寻找依据。本交接记录刻意不把这一反思提前写成下一步实验方案。
+
+## 8. 当前冻结边界
+
+- 不从任何现有 250/500-step checkpoint 继续到 5,000 step。
+- 不宣称已经完成规范中的 `M4 RQ1` 或进入 `M5 scale`。
+- 不把 ChatEarthNet validation 的短期下降表述为外部任务性能提升。
+- 不用已观测的 RSICD test 或全量 EuroSAT 循环调参。
+- 不因 `best.pt` 存在而删除 step 0、resume step、final step 或失败实验报告。
+- 不更改已运行实验的 config、metrics、provenance、checkpoint 或历史输出目录名来修饰结果。
+- 在完成方法层面的文献与经验审视之前，本文件不授权新的训练配置。
 
 ## 9. 产物保留、恢复与复现
 
-每个 run 至少保留以下文件，直到该 run 的完整核验报告和数据备份都已确认：
+每个 run 至少保留以下文件，直到完整核验报告和异地备份均确认：
 
 ```text
 config.toml
@@ -274,33 +332,34 @@ training_summary.json
 verification_report.json
 ```
 
-`best.pt` 只是被选中的某一步训练状态，不能恢复任意另一 step 的优化器、queue、sampler 或 RNG 状态。若发现产物缺失，先用只读工具盘点，绝不伪造恢复：
-
-```bash
-OUTPUT=outputs/m3_web_global77_formalschedule_500step_pilot_seed11
-python tools/inspect_training_artifacts.py \
-  --output "$OUTPUT" \
-  --expected-checkpoint-step 0 \
-  --expected-checkpoint-step 250 \
-  --expected-checkpoint-step 500 \
-  --report "$OUTPUT/recovery_report.json"
-```
-
-下游结果已下载到本地的：
+`best.pt` 只是被选中的某一步训练状态，不能恢复任意另一 step 的 optimizer、scheduler、queue、
+sampler 或 RNG 状态。不得删除或覆盖下列诊断证据：
 
 ```text
+outputs/gate_a_step0_parity/
+outputs/m4_web_abc_100step_development_seed11/
+outputs/m4_web_a_fullscope_lr5e6_100step_seed11/
+outputs/m4_web_b_visionhead_lr5e5_100step_seed11/
+outputs/m4_web_c_visionhead_lr5e6_100step_seed11/
+outputs/m5_web_ac_250step_development_seed11/
 outputs/m3_downstream_500step_pilot_seed11/
 ```
 
-其中四份任务报告与 `verification_report.json` 都应和论文实验记录一同备份。
+其中含 `m4`/`m5` 的路径是已经落盘的历史实验身份，只应在叙述中纠正含义，不应通过改目录或
+改 checkpoint 内容追溯性“修正”。若发现产物缺失，先用 `tools/inspect_training_artifacts.py`
+只读盘点，不伪造恢复证据。
 
 ## 10. 相关代码与文档
 
-- `docs/DEVELOPMENT_ARCHITECTURE.md`：训练、checkpoint、验证和评测的目标架构。
-- `scripts/run_web_500step_formal_schedule_pilot.sh`：历史 Web 受限 pilot。
-- `scripts/run_sat_500step_formal_schedule_pilot.sh`：历史 SAT 受限 pilot。
-- `scripts/run_downstream_pilot_evaluation.sh`：已完成的下游闭环入口。
-- `src/dinotxt_rs/evaluation/`：EuroSAT 与 RSICD 的确定性评测实现。
+- `docs/DEVELOPMENT_ARCHITECTURE.md`：阶段命名、训练、checkpoint、验证和评测的约束；
+- `scripts/run_step0_parity_checks.sh`：已完成的 step-0 parity 入口；
+- `scripts/run_web_500step_formal_schedule_pilot.sh`：历史 Web 受限 pilot；
+- `scripts/run_sat_500step_formal_schedule_pilot.sh`：历史 SAT 受限 pilot；
+- `scripts/run_downstream_pilot_evaluation.sh`：已完成的下游闭环入口；
+- `scripts/run_m4_web_abc_100step_development.sh`：历史误命名的 100-step 诊断复现入口；
+- `scripts/run_m5_web_ac_250step_development.sh`：历史误命名的 250-step 续跑复现入口；
+- `src/dinotxt_rs/evaluation/`：EuroSAT、RSICD 与 parity 的确定性评测实现；
 - `tools/inspect_training_artifacts.py`：缺失产物的只读诊断。
 
-下一位执行者应运行 **M5 A/C 250-step 开发续跑**，而不是重跑 Gate A、继续 B，或启动任何 5,000-step 长训练。
+本项目当前停留在 M3 后、M4 前的方法反思阶段。本文只记录已经发生的事实、失败模式与认识
+边界，不给出下一步配置或实验排期。

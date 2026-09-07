@@ -153,7 +153,7 @@ bash scripts/run_downstream_pilot_evaluation.sh
 
 该脚本将 EuroSAT 的 27,000 张图像按版本控制的 prompt ensemble 进行零样本分类，并只使用 RSICD 官方 `test` split 的全部原始 caption 计算 I→T/T→I Recall@1/5/10、median rank。每个微调 checkpoint 在加载前会严格比对其训练 `config.toml`、provenance 输入 hash 和 checkpoint identity；输出目录中的 `verification_report.json` 确认四组模型使用相同的 EuroSAT/RSICD manifests。测试集不会参与 `best.pt` 选择。
 
-现有下游结果显示当前训练策略损害了外部保持性，因此不得直接延长到 5,000 step。下一步先运行 Gate A，确认官方初始化与两个 run 的 `step_0000000.pt` 在相同固定输入上数值一致：
+现有下游结果显示当前训练策略损害了外部保持性，因此不得直接延长到 5,000 step。随后完成的 Gate A 用于确认官方初始化与两个 run 的 `step_0000000.pt` 在相同固定输入上数值一致：
 
 ```bash
 bash scripts/run_step0_parity_checks.sh
@@ -161,21 +161,21 @@ bash scripts/run_step0_parity_checks.sh
 
 该脚本会顺序加载模型以控制显存，严格核对 checkpoint 身份及可训练参数指纹，并比较 token、图文特征、patch 特征、logit scale、相似度矩阵和无 queue 对比损失。Web 或 SAT 任一检查失败时都不得启动新训练；通过后，综合报告位于 `outputs/gate_a_step0_parity/verification_report.json`。
 
-Gate A 通过后，按预注册的开发协议运行 Web A/B/C 三组 100-step 消融：
+Gate A 通过后，项目完成了 Web A/B/C 三组 100-step 诊断：
 
 ```bash
 bash scripts/run_m4_web_abc_100step_development.sh
 ```
 
-三组分别隔离低学习率、vision-head-only 更新范围及二者组合，并使用未参与最终报告的 RSICD `val` 检查外部能力保持性。固定变量、非劣效门槛与产物规则见 [docs/M4_DEVELOPMENT_PROTOCOL.md](docs/M4_DEVELOPMENT_PROTOCOL.md)。
+三组分别诊断低学习率、vision-head-only 更新范围及二者组合，并使用未参与最终报告的 RSICD `val` 检查外部能力保持性。该脚本和输出目录中的 `m4` 是已经落盘的历史误命名，不代表架构规划中的 `M4 RQ1`。
 
-M4 通过后，只将低学习率 A/C 从原 step-100 checkpoint 严格恢复到 warmup 终点 step 250：
+之后又将低学习率 A/C 从原 step-100 checkpoint 严格恢复到 warmup 终点 step 250：
 
 ```bash
 bash scripts/run_m5_web_ac_250step_development.sh
 ```
 
-脚本保持 checkpoint 中记录的原训练 commit，不放宽恢复身份校验；它在临时 Git worktree 中执行当时的训练代码，并新增 step 150/200/250 的 ChatEarthNet validation 和 RSICD-val 评估。step 250 必须同时满足同域 validation 改善与 RSICD-val 非劣效，只有唯一 Pareto 候选才自动推荐进入 500 step。完整规则见 [docs/M5_DEVELOPMENT_PROTOCOL.md](docs/M5_DEVELOPMENT_PROTOCOL.md)。
+脚本保持 checkpoint 中记录的原训练 commit，不放宽恢复身份校验；它在临时 Git worktree 中执行当时的训练代码，并新增 step 150/200/250 的 ChatEarthNet validation 和 RSICD-val 评估。A/C 均未同时通过同域改善与 RSICD-val 非劣效门槛，没有候选可进入 500 step。该脚本和输出目录中的 `m5` 同样是历史误命名，不代表架构规划中的 `M5 scale`。两轮诊断的完整协议、数值、结论和当前反思边界统一记录在 [docs/PREPARE_HANDOFF.md](docs/PREPARE_HANDOFF.md)，不再维护单独的阶段协议文档。
 
 训练启动时会计算当前配置、backbone、dino.txt 头、tokenizer 和 manifest 的 SHA-256，并将项目/DINOv3 commit、GPU/CUDA、Python 与 PyTorch 写入输出目录的 `provenance.json`。大权重哈希计算需要短暂等待，这是实验可复现性的必要成本。
 
