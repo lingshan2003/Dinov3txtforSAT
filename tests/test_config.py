@@ -108,7 +108,9 @@ def test_load_m4_abc_configs() -> None:
 def test_load_skyscript_adapter_configs() -> None:
     smoke = load_config(Path("configs/skyscript_web_adapter_10step.toml"))
     pilot = load_config(Path("configs/skyscript_web_adapter_100step.toml"))
-    for config in (smoke, pilot):
+    seed23 = load_config(Path("configs/skyscript_web_adapter_100step_seed23.toml"))
+    seed47 = load_config(Path("configs/skyscript_web_adapter_100step_seed47.toml"))
+    for config in (smoke, pilot, seed23, seed47):
         assert config.model.image_adapter_bottleneck == 256
         assert config.model.text_last_k == 0
         assert not config.model.train_vision_head
@@ -120,3 +122,9 @@ def test_load_skyscript_adapter_configs() -> None:
     assert not smoke.data.shuffle_train
     assert pilot.train.max_steps == 100
     assert pilot.train.validation_every == 25
+    assert seed23.experiment.seed == 23
+    assert seed47.experiment.seed == 47
+    for replication in (seed23, seed47):
+        assert replication.data == pilot.data
+        assert replication.model == pilot.model
+        assert replication.train == pilot.train

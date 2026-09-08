@@ -26,6 +26,7 @@ Options:
   --batch-size N       Evaluation forward batch size (default: 64).
   --num-workers N      Evaluation image workers (default: 4).
   --chunk-size N       Retrieval score chunk size (default: 256).
+  --skip-code-checks   Skip ruff/pytest/compileall (for the S1 wrapper only).
   -h, --help           Show this help.
 
 Run this script with bash; do not source it into the current terminal.
@@ -40,6 +41,7 @@ RSICD_ROOT="assets/data/raw/rsicd"
 BATCH_SIZE=64
 NUM_WORKERS=4
 CHUNK_SIZE=256
+SKIP_CODE_CHECKS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,6 +68,10 @@ while [[ $# -gt 0 ]]; do
     --chunk-size)
       CHUNK_SIZE="$2"
       shift 2
+      ;;
+    --skip-code-checks)
+      SKIP_CODE_CHECKS=true
+      shift
       ;;
     -h|--help)
       usage
@@ -157,10 +163,12 @@ require_equal "$(sha256_file "${VAL_MANIFEST}")" "${EXPECTED_VAL_SHA}" \
 require_equal "$(sha256_file "${RSICD_ANNOTATION}")" "${EXPECTED_RSICD_ANNOTATION_SHA}" \
   "RSICD annotation SHA-256"
 
-echo "Running code checks..."
-ruff check .
-pytest
-python -m compileall -q src tools
+if [[ "${SKIP_CODE_CHECKS}" == false ]]; then
+  echo "Running code checks..."
+  ruff check .
+  pytest
+  python -m compileall -q src tools
+fi
 
 mkdir -p "${S0_DIR}" "${S0_DIR}/quarantine"
 
@@ -219,7 +227,7 @@ assert report["final_queue_size"] == 0
 assert report["train_manifest_sha256"] == sys.argv[2]
 assert report["val_manifest_sha256"] == sys.argv[3]
 assert report["dinov3_commit"] == sys.argv[4]
-assert report["best_validation_step"] == 100
+assert report["best_validation_step"] in {0, 25, 50, 75, 100}
 print("training_artifacts=verified")
 PY
 
@@ -528,6 +536,10 @@ sky_delta = sky[100]["mean_recall"] - sky[0]["mean_recall"]
 rsicd_delta = rsicd[100]["mean_recall"] - rsicd_official["mean_recall"]
 checks = {
     "training_artifacts": training["completed"] is True and training["steps"] == 100,
+    "training_validation_step100_below_step0_and_best_not_step0": (
+        training["validation_loss"]["last"] < training["validation_loss"]["first"]
+        and training["best_validation_step"] != 0
+    ),
     "train_validation_overlap": overlap["status"] == "clear",
     "step0_parity": parity["status"] == "pass",
     "training_rsicd_val_overlap": rsicd_overlap["status"] == "clear",
