@@ -103,3 +103,20 @@ def test_load_m4_abc_configs() -> None:
         assert config.train.max_steps == 5000
     assert b.train.learning_rate == 5e-5
     assert c.train.learning_rate == 5e-6
+
+
+def test_load_skyscript_adapter_configs() -> None:
+    smoke = load_config(Path("configs/skyscript_web_adapter_10step.toml"))
+    pilot = load_config(Path("configs/skyscript_web_adapter_100step.toml"))
+    for config in (smoke, pilot):
+        assert config.model.image_adapter_bottleneck == 256
+        assert config.model.text_last_k == 0
+        assert not config.model.train_vision_head
+        assert not config.model.train_text_projection
+        assert not config.model.train_logit_scale
+        assert not config.data.train_augmentation
+        assert config.train.queue_size == 0
+    assert smoke.train.max_steps == 10
+    assert not smoke.data.shuffle_train
+    assert pilot.train.max_steps == 100
+    assert pilot.train.validation_every == 25

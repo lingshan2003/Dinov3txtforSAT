@@ -26,6 +26,7 @@ class ModelConfig:
     train_vision_head: bool = True
     train_text_projection: bool = True
     train_logit_scale: bool = True
+    image_adapter_bottleneck: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +116,7 @@ def load_config(path: str | Path) -> Config:
             train_vision_head=bool(model.get("train_vision_head", True)),
             train_text_projection=bool(model.get("train_text_projection", True)),
             train_logit_scale=bool(model.get("train_logit_scale", True)),
+            image_adapter_bottleneck=int(model.get("image_adapter_bottleneck", 0)),
         ),
         data=DataConfig(
             train_manifest=Path(data["train_manifest"]),
@@ -179,6 +181,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("model.image_size must be a positive multiple of the ViT patch size (16)")
     if not 0 <= config.model.text_last_k <= 24:
         raise ValueError("model.text_last_k must be in [0, 24]")
+    if config.model.image_adapter_bottleneck < 0:
+        raise ValueError("model.image_adapter_bottleneck must be nonnegative")
     if config.train.precision not in {"bf16", "fp16", "fp32"}:
         raise ValueError("train.precision must be bf16, fp16, or fp32")
     positive = {

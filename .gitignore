@@ -26,3 +26,7 @@ outputs/*
 *.zip
 *.rar
 *.7z
+SkyScript_*.csv
+
+images2.zip
+images3.zip

@@ -27,6 +27,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dinov3-repo", required=True, type=Path)
     parser.add_argument("--bpe-vocab", required=True, type=Path)
     parser.add_argument("--context-length", type=int, default=77)
+    parser.add_argument(
+        "--strategy",
+        choices=("first-complete-sentence", "complete-word-backoff"),
+        default="first-complete-sentence",
+        help=(
+            "Preserve the historical first-sentence behavior by default; SkyScript should use "
+            "complete-word-backoff so a generic first sentence cannot replace its summary"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -75,8 +84,13 @@ def percentile(values: list[int], fraction: float) -> int:
 
 
 def derive_records(
-    input_path: Path, tokenizer: Any, context_length: int
+    input_path: Path,
+    tokenizer: Any,
+    context_length: int,
+    strategy: str = "first-complete-sentence",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if strategy not in {"first-complete-sentence", "complete-word-backoff"}:
+        raise ValueError(f"Unsupported caption fitting strategy: {strategy}")
     records: list[dict[str, Any]] = []
     original_token_lengths: list[int] = []
     global_token_lengths: list[int] = []
@@ -95,15 +109,21 @@ def derive_records(
             if not isinstance(caption, str) or not caption.strip():
                 raise ValueError(f"{input_path}:{line_number}: invalid caption for {record['id']}")
 
-            sentence = first_complete_sentence(caption)
-            global_caption, used_backoff = fit_complete_words(tokenizer, sentence, context_length)
+            candidate = (
+                first_complete_sentence(caption)
+                if strategy == "first-complete-sentence"
+                else caption
+            )
+            global_caption, used_backoff = fit_complete_words(
+                tokenizer, candidate, context_length
+            )
             original_token_lengths.append(token_count(tokenizer, caption))
             global_token_lengths.append(token_count(tokenizer, global_caption))
             if used_backoff:
                 word_backoff.append(
                     {
                         "id": record["id"],
-                        "first_sentence_tokens": token_count(tokenizer, sentence),
+                        "candidate_tokens": token_count(tokenizer, candidate),
                         "global77_tokens": token_count(tokenizer, global_caption),
                         "global77_caption": global_caption,
                     }
@@ -113,7 +133,11 @@ def derive_records(
     if not records:
         raise ValueError(f"Input manifest is empty: {input_path}")
     audit = {
-        "strategy": "first_complete_sentence_then_complete_word_backoff",
+        "strategy": (
+            "first_complete_sentence_then_complete_word_backoff"
+            if strategy == "first-complete-sentence"
+            else "complete_word_backoff_without_sentence_selection"
+        ),
         "context_length": context_length,
         "input_manifest": str(input_path.resolve()),
         "input_manifest_sha256": sha256_file(input_path),
@@ -174,7 +198,9 @@ def main() -> None:
     if input_path == output_path:
         raise ValueError("--output must differ from --input so the raw manifest remains immutable")
     tokenizer = load_tokenizer(args.dinov3_repo, args.bpe_vocab)
-    records, audit = derive_records(input_path, tokenizer, args.context_length)
+    records, audit = derive_records(
+        input_path, tokenizer, args.context_length, strategy=args.strategy
+    )
     write_jsonl_atomic(output_path, records)
     audit["output_manifest"] = str(output_path)
     audit["output_manifest_sha256"] = sha256_file(output_path)

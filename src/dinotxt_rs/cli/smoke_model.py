@@ -63,7 +63,11 @@ def main() -> None:
     import torch
 
     from dinotxt_rs.config import load_config
-    from dinotxt_rs.models import configure_trainable_parameters, load_official_dinotxt
+    from dinotxt_rs.models import (
+        add_image_embedding_adapter,
+        configure_trainable_parameters,
+        load_official_dinotxt,
+    )
 
     config = load_config(args.config)
     missing = [str(path) for path in model_paths(config) if not path.exists()]
@@ -81,12 +85,16 @@ def main() -> None:
         config.model.dinotxt_weights,
         config.model.bpe_vocab,
     )
+    model = add_image_embedding_adapter(
+        model, bottleneck_dim=config.model.image_adapter_bottleneck
+    )
     counts = configure_trainable_parameters(
         model,
         text_last_k=config.model.text_last_k,
         train_vision_head=config.model.train_vision_head,
         train_text_projection=config.model.train_text_projection,
         train_logit_scale=config.model.train_logit_scale,
+        train_image_adapter=config.model.image_adapter_bottleneck > 0,
     )
     model.to(device).eval()
     prompt_templates = ["a satellite image of forest", "a satellite image of water"]

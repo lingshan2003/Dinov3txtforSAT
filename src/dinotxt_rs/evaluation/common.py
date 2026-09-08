@@ -17,7 +17,11 @@ from torch.utils.data import DataLoader, Dataset
 
 from dinotxt_rs.config import Config
 from dinotxt_rs.data import make_transform
-from dinotxt_rs.models import configure_trainable_parameters, load_official_dinotxt
+from dinotxt_rs.models import (
+    add_image_embedding_adapter,
+    configure_trainable_parameters,
+    load_official_dinotxt,
+)
 from dinotxt_rs.training.provenance import run_identity, sha256_file, sha256_text
 
 
@@ -156,12 +160,16 @@ def load_evaluation_model(
         config.model.dinotxt_weights,
         config.model.bpe_vocab,
     )
+    model = add_image_embedding_adapter(
+        model, bottleneck_dim=config.model.image_adapter_bottleneck
+    )
     counts = configure_trainable_parameters(
         model,
         text_last_k=config.model.text_last_k,
         train_vision_head=config.model.train_vision_head,
         train_text_projection=config.model.train_text_projection,
         train_logit_scale=config.model.train_logit_scale,
+        train_image_adapter=config.model.image_adapter_bottleneck > 0,
     )
     checkpoint_metadata = (
         None

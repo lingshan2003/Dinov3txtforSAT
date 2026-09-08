@@ -37,6 +37,7 @@ def configure_trainable_parameters(
     train_vision_head: bool,
     train_text_projection: bool,
     train_logit_scale: bool,
+    train_image_adapter: bool = False,
 ) -> dict[str, int]:
     """Apply one explicit freeze policy and return total/trainable parameter counts."""
     for parameter in model.parameters():
@@ -61,6 +62,13 @@ def configure_trainable_parameters(
         for parameter in model.text_model.head.parameters():
             parameter.requires_grad_(True)
     model.logit_scale.requires_grad_(train_logit_scale)
+
+    image_adapter = getattr(model, "image_adapter", None)
+    if train_image_adapter:
+        if image_adapter is None:
+            raise ValueError("train_image_adapter requires a configured image adapter")
+        for parameter in image_adapter.parameters():
+            parameter.requires_grad_(True)
 
     total = sum(parameter.numel() for parameter in model.parameters())
     trainable = sum(
