@@ -503,6 +503,7 @@ sampler 和 RNG 状态。任何清理前都应先生成只读盘点并完成异�
 | 当前适配模块与冻结 | `src/dinotxt_rs/models/embedding_adapter.py`、`src/dinotxt_rs/models/official_dinotxt.py` |
 | 产物与数据核验 | `tools/verify_training_run.py`、`tools/audit_manifest_image_overlap.py` |
 | 初始化与下游评测 | `src/dinotxt_rs/evaluation/`、`src/dinotxt_rs/cli/evaluate_rsicd.py`、`src/dinotxt_rs/cli/evaluate_skyscript.py` |
+| Gate S0 完整执行 | `scripts/run_skyscript_gate_s0.sh`（使用 `bash` 执行，不能 `source`） |
 | 历史异常产物盘点 | `tools/inspect_training_artifacts.py` |
 
 历史 `run_m4_*`、`run_m5_*` 和 ChatEarthNet pilot 脚本仅用于追溯，不能当作当前 SkyScript
@@ -637,11 +638,22 @@ python tools/audit_manifest_text.py \
 以下在保有原始服务器产物的环境执行。核验器向标准输出写 JSON；仅成功时发布报告，避免覆盖
 已有证据。首次保存前确认下列正式报告和临时文件都不存在；已有报告先读取核实。
 
+推荐直接运行完整编排脚本：
+
+```bash
+bash scripts/run_skyscript_gate_s0.sh
+```
+
+不要使用 `source scripts/run_skyscript_gate_s0.sh`；脚本失败只应结束子进程，不应关闭当前终端。
+脚本会校验并复用已有正式报告、保留失败日志，并在
+`outputs/skyscript_gate_s0_seed11/summary.json` 汇总门槛结果。以下分步命令仅用于排查。
+
 ```bash
 set -euo pipefail
 run_dir=outputs/skyscript_images23_top30raw_imageadapter256_36495_100step_seed11
 test ! -e "$run_dir/verification_report.json"
 test ! -e "$run_dir/verification_report.json.part"
+verification_tmp="$(mktemp outputs/.skyscript-verification.XXXXXX)"
 python tools/verify_training_run.py \
   --output "$run_dir" \
   --expected-steps 100 --expected-target-steps 100 --require-completed \
@@ -653,11 +665,12 @@ python tools/verify_training_run.py \
   --required-checkpoint-step 50 --required-checkpoint-step 75 --required-checkpoint-step 100 \
   --require-validation --validation-every 25 --require-best-checkpoint \
   --expected-validation-loss-batch-size 16 --expected-validation-forward-batch-size 64 \
-  > "$run_dir/verification_report.json.part"
-mv "$run_dir/verification_report.json.part" "$run_dir/verification_report.json"
+  > "$verification_tmp"
+mv "$verification_tmp" "$run_dir/verification_report.json"
 ```
 
-如果运行失败，先查看错误与临时报告，不能把部分输出登记为通过。
+临时报告必须放在训练目录外，否则核验器会把自己的 `*.part` 识别为未完成训练产物。如果运行失败，
+先查看错误与临时报告，不能把部分输出登记为通过。
 
 ```bash
 python tools/audit_manifest_image_overlap.py \
