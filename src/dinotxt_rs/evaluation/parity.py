@@ -4,6 +4,7 @@ import gc
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,11 @@ import torch
 
 from dinotxt_rs.config import Config
 from dinotxt_rs.data import ImageTextDataset, collate_image_text, make_transform
-from dinotxt_rs.evaluation.common import evaluation_runtime, load_evaluation_model
+from dinotxt_rs.evaluation.common import (
+    evaluation_runtime,
+    load_evaluation_model,
+    load_official_reference_model,
+)
 from dinotxt_rs.losses import symmetric_contrastive_loss
 from dinotxt_rs.training.provenance import git_commit, sha256_file
 
@@ -37,14 +42,15 @@ def tensor_sha256(tensor: torch.Tensor) -> str:
     return digest.hexdigest()
 
 
-def trainable_parameter_fingerprint(model: Any) -> dict[str, Any]:
+def parameter_state_fingerprint(state: Mapping[str, Any]) -> dict[str, Any]:
     digest = hashlib.sha256()
     names: list[str] = []
     tensors = 0
     elements = 0
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
+    for name in sorted(state):
+        parameter = state[name]
+        if not isinstance(parameter, torch.Tensor):
+            raise ValueError(f"Parameter state {name!r} is not a tensor")
         names.append(name)
         tensors += 1
         elements += parameter.numel()
@@ -68,6 +74,26 @@ def trainable_parameter_fingerprint(model: Any) -> dict[str, Any]:
         "elements": elements,
         "names_sha256": hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest(),
     }
+
+
+def trainable_parameter_fingerprint(model: Any) -> dict[str, Any]:
+    return parameter_state_fingerprint(
+        {
+            name: parameter
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+    )
+
+
+def _checkpoint_parameter_fingerprint(checkpoint: Path) -> dict[str, Any]:
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict):
+        raise ValueError("Parity checkpoint payload is not a mapping")
+    state = payload.get("trainable_model")
+    if not isinstance(state, dict):
+        raise ValueError("Parity checkpoint has no trainable model state")
+    return parameter_state_fingerprint(state)
 
 
 def compare_tensors(
@@ -221,9 +247,8 @@ def run_step0_parity(
 
     pixels, captions, input_metadata = _load_input(config, input_manifest, batch_size)
 
-    official = load_evaluation_model(config)
+    official = load_official_reference_model(config)
     official_metadata = official.metadata
-    official_fingerprint = trainable_parameter_fingerprint(official.model)
     official_outputs = _capture_outputs(official, pixels=pixels, captions=captions)
     runtime = evaluation_runtime(official.device)
     official_device = official.device
@@ -245,6 +270,7 @@ def run_step0_parity(
         _release_device_cache(restored_device)
         raise ValueError(f"Parity requires a step-0 checkpoint, got step={observed_step!r}")
     restored_fingerprint = trainable_parameter_fingerprint(restored.model)
+    checkpoint_fingerprint = _checkpoint_parameter_fingerprint(checkpoint)
     restored_outputs = _capture_outputs(restored, pixels=pixels, captions=captions)
     restored_metadata = restored.metadata
     restored_device = restored.device
@@ -266,12 +292,12 @@ def run_step0_parity(
             "symmetric_contrastive_loss",
         )
     }
-    parameter_match = official_fingerprint == restored_fingerprint
+    parameter_match = checkpoint_fingerprint == restored_fingerprint
     passed = token_match and parameter_match and all(
         comparison["passed"] for comparison in comparisons.values()
     )
     return {
-        "format_version": 1,
+        "format_version": 2,
         "status": "pass" if passed else "fail",
         "project_commit": git_commit(config.source.parent),
         "backbone_domain": config.model.backbone_domain,
@@ -283,8 +309,14 @@ def run_step0_parity(
         "checkpoint_step": checkpoint_metadata["step"],
         "trainable_parameters": {
             "passed": parameter_match,
-            "official": official_fingerprint,
-            "step0": restored_fingerprint,
+            "comparison": "checkpoint_state_vs_restored_model",
+            "checkpoint": checkpoint_fingerprint,
+            "restored": restored_fingerprint,
+            "original_initialization_identity_available": False,
+            "note": (
+                "The checkpoint state is verified after restoration. Exact identity with a "
+                "separate random adapter construction is not claimed."
+            ),
         },
         "tokens": {
             "passed": token_match,

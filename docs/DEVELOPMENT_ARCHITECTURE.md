@@ -1,205 +1,136 @@
-# DINOtxt-RS 开发架构与实验纪律
+# 遥感图文对齐项目：开发架构与实验纪律
 
-**状态**：v0.1，适用于 Model A / Minimum Viable Thesis。  
-**原则**：任何代码变化都必须能回答“它改变了哪一个研究变量”，任何实验结果都必须能回答“它能否被同一配置和同一数据清单复现”。
+更新日期：2026-09-08。本文定义稳定的系统边界和开发契约，不指定必须使用哪个数据集、模型或适配模块。研究目标见[科研背景](../DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md)，当前实现与阶段状态见[最新交接](PREPARE_HANDOFF.md)。
 
-## 1. 系统边界
+原则：代码变化应能说明改变了哪个研究变量；实验结果应能由同一配置、数据清单与运行身份复现。
 
-首版系统只实现以下闭环：
-
-```text
-ChatEarthNet RGB + caption
-        │
-        ├── canonical JSONL manifest
-        │
-        ▼
-frozen DINOv3 ViT-L/16 (Web 或 SAT)
-        + trainable official dino.txt vision head
-        + trainable text projection
-        + optional last-K text blocks
-        │
-        ▼
-symmetric image-text contrastive loss
-        │
-        ▼
-retrieval / zero-shot / patch-text diagnostic
-```
-
-以下内容不进入 MVP 主分支：DINOv3 backbone 全量微调、7B backbone、多光谱输入、caption generation、pixel decoder、LoRA 与 last-K 同时启用、局部监督损失。它们只能在基线冻结并产生可复现结果后，以独立配置和独立消融加入。
-
-## 2. 依赖方向
-
-代码必须遵守单向依赖：
+## 1. 从研究问题到证据的闭环
 
 ```text
-cli → training → {models, data, losses, config}
-tools → canonical data contract
-models/data/losses 不依赖 cli 或 training
+研究假设 → 固定数据与评价协议 → 建立初始化参照
+                   │
+原始数据 → 转换与审计 → 统一 manifest
+                             │
+                  图像表示 + 文本表示
+                             │
+                    可替换的对齐模块
+                             │
+                   明确正负例的优化目标
+                             │
+                 确定性验证 + 状态保存
+                             │
+             同域能力 / 外部保持 / 失败诊断
+                             │
+                   接受、修订或拒绝假设
 ```
 
-规则：
+系统应支持更换数据来源、表示模型和适配方法，同时尽量复用训练、审计和评测流程。更换一种方法不应要求每个数据集重写训练循环；增加一种数据集也不应把原始 CSV 规则带进模型层。
 
-1. `cli/` 只解析参数和组装对象，不实现算法。
-2. `models/` 不读取实验 TOML、不创建 DataLoader、不写 checkpoint。
-3. `data/` 不知道模型结构，只输出 pixels、caption、sample id。
-4. `losses/` 只接受 tensor，不读取全局状态和文件。
-5. `training/` 是唯一允许同时依赖 model、data 和 loss 的层。
-6. `tools/` 产生的最终结果必须符合 canonical manifest，训练代码不得为每个原始数据集增加 if/else。
+先实现可验证的最小路径。多文本、局部监督、多光谱和分布式训练都是独立扩展；每项扩展先定义输入、输出、对照与验收，再增加代码。
 
-## 3. 第三方代码规则
+## 2. 分层职责与依赖
 
-DINOv3 作为外部依赖放在 `external/dinov3`，不得复制其源码到本项目后静默修改。固定提交为：
+| 层 | 职责 | 边界 |
+| --- | --- | --- |
+| `config.py` | 解析配置、检查字段与组合约束 | 不启动训练、不隐藏研究变量 |
+| `tools/` | 原始数据转换、审计、产物核验 | 输出规范文件，不把数据源特例交给训练器 |
+| `data/` | 读取统一 manifest、图像变换与 batch 组装 | 不依赖具体网络层；划分由准备阶段固定 |
+| `models/` | 加载表示模型、适配接口、显式冻结策略 | 不创建 DataLoader、不管理实验日志 |
+| `losses/` | 根据张量和显式状态计算目标 | 不读取数据文件或实验目录 |
+| `training/` | 优化、验证、选模、保存和恢复 | 不解释原始数据源格式 |
+| `evaluation/` | 加载可核验候选、计算任务指标、输出证据 | 不执行参数优化；任务特有格式在边界适配 |
+| `cli/` | 参数解析、调用配置与组件、组织命令 | 不承载核心算法 |
+| `scripts/` | 串联可复现实验命令 | 不内嵌另一套超参数或核心算法 |
 
-```text
-6876159a11b4df116f30f667f8c9888617df0751
-```
+目标依赖方向：`cli → training/evaluation → models/data/losses/config`。底层组件不反向依赖入口或编排层。允许评测复用来源核验等公共工具；不要为追求形式上的分层复制身份校验逻辑。
 
-如需升级：
+这是开发指导，当前实现尚非完全通用框架。例如检索数据加载仍有 RSICD 专用入口；新增数据源时应抽离或新增明确的适配入口，不能伪造来源字段绕过检查。
 
-1. 单独提交依赖升级；
-2. 记录旧、新 commit；
-3. 对 Web 与 SAT 两个 smoke test 重新验证；
-4. 比较模型参数名、输出 shape、预处理统计量和 checkpoint 加载报告；
-5. 不得在同一提交中同时改变训练方法。
+## 3. 统一数据契约
 
-本项目 checkpoint 只保存可训练参数，不复制官方 backbone 权重。发布时必须分别遵守 DINOv3 License 与数据集许可，不把上游权重重新打包进项目产物。
-
-## 4. 配置是实验唯一事实源
-
-每次训练必须由一个 TOML 配置完整定义。禁止把学习率、冻结层数、数据子集、随机种子或 normalization 写成脚本内的临时常量。
-
-配置分四组：
-
-- `experiment`：名字、seed、输出目录；
-- `model`：上游 commit 对应目录、权重、视觉域、冻结策略；
-- `data`：manifest 和加载参数；
-- `train`：优化器相关超参数和 negative queue。
-
-规则：
-
-1. 已经开始训练的配置视为不可变；新实验复制并改名。
-2. 输出目录保存配置原文 `config.toml`。
-3. 实验名必须包含关键变量，例如 `sat_last4_10k_seed11`。
-4. 路径可以因服务器变化而变化，但影响研究结论的字段不可隐藏在环境变量里。
-5. 同一对照组除目标研究变量外必须逐字段相同。
-
-## 5. Canonical 数据契约
-
-训练只读取 UTF-8 JSONL，每行必须包含：
+训练输入为 UTF-8 JSONL，每行至少包含：
 
 ```json
-{"id":"chatearthnet:4334_2404_patch00.png","image":"/absolute/path/4334_2404_patch00.png","caption":"...","split":"train","source":"ChatEarthNet"}
+{"id":"dataset:sample-001","image":"/absolute/path/sample-001.jpg","caption":"A bridge over a river.","split":"train","source":"dataset"}
 ```
 
-字段约束：
+| 字段 | 契约 |
+| --- | --- |
+| `id` | 稳定、可追溯，推荐 `<source>:<native-id>` |
+| `image` | 指向当前运行环境的绝对路径 |
+| `caption` | 单个非空文本；多描述关系必须在准备或任务适配层显式表达 |
+| `split` | 预先确定的划分；训练阶段不得重新划分 |
+| `source` | 真实数据来源，用于审计与分组分析 |
 
-- `id`：跨数据集唯一且稳定，格式推荐 `<source>:<native-id>`；
-- `image`：预处理时写入绝对路径，训练时不猜目录；
-- `caption`：单个非空字符串；多 caption 样本在预处理阶段明确选择或展开；
-- `split`：只能由数据准备阶段决定，训练阶段不得重新随机划分；
-- `source`：保留来源，用于泄漏审计与分组分析。
+当前 loader 检查必需字段、非空清单和图像读取；不代表它已自动保证唯一性、文本质量或 split 无泄漏。这些是数据准备阶段的责任。
 
-数据准备必须满足：
+数据准备须保留原始输入、清洗前后清单及审计报告，固定抽样 seed 和具体样本。记录坏图、缺图、空文本、文本长度、重复、来源分布与所有排除项，禁止静默丢弃。文本预算用实际 tokenizer 检查；分词器、清洗规则和最大长度属于数据协议。
 
-1. 原始压缩包只读保留，转换产物写入新目录；
-2. 下载文件验证官方 hash；
-3. 子集抽样固定 seed，并把抽样后的具体样本固化为 manifest；
-4. train/val/test 按 `id` 去重，并对图像内容 hash 做二次泄漏审计；
-5. NWPU-Captions 与 NWPU-RESISC45 的同源关系必须在报告中标注，不能作为完全独立 zero-shot 证据；
-6. caption 清洗前后分别保存 manifest，不覆盖原文；
-7. 坏图、缺图和超长文本数量必须输出统计，禁止训练时静默跳过。
+泄漏审计分层进行：样本身份、规范化文本、文件 hash、解码像素 hash，以及可获得时的地点或近重复关系。精确 hash 为零只排除精确重复。训练集还应与外部评测数据审计来源关系，不能把同源数据当作独立证据。
 
-## 6. 模型契约与冻结策略
+图像增强必须与文本语义兼容。空间方向、主体裁剪和细粒度属性可能被变换破坏，开启增强应作为显式变量。
 
-模型 forward 采用官方 dino.txt 返回值：
+## 4. 表示与适配接口
 
-```text
-image_features:          [B, 2048], L2 normalized
-text_features:           [B, 2048], L2 normalized
-logit_scale:             scalar, exponentiated
-patch_tokens:            [B, N, 1024]（alignment head 后）
-backbone_patch_tokens:   [B, N, 1024]（backbone 输出）
-```
+概念上模型应提供归一化的图像与文本全局表示、相似度尺度，以及可选局部表示。维度由具体实现声明，不由架构固定；损失与评测按契约消费这些输出。
 
-MVP 的参数状态必须由一个函数显式设置：
+每种模型实现须明确预处理、tokenizer、归一化、维度、dtype 和尺度含义。当前代码的返回结构仍是具体模型的五项 tuple，维度与适配位置见交接；抽象契约不表示已实现可插拔注册系统。
 
-| 模块 | 默认状态 |
-|---|---|
-| DINOv3 backbone | frozen + eval |
-| dino.txt vision head | train |
-| text token/position embedding | frozen |
-| text transformer last K blocks | train |
-| text final norm | K > 0 时 train |
-| text projection | train |
-| logit scale | train，限制到 `[1, 100]` |
+冻结策略必须集中设置并核对可训练参数列表及数量。`requires_grad=False` 与模块处于 `eval()` 是两件事，冻结模块的随机行为和统计更新也必须受控。新增模块需验证其实际参与优化，原有冻结层未被意外解冻。
 
-每次启动必须打印 total/trainable parameter count。不得仅依赖模块名字符串的模糊匹配来冻结参数。若参数命名因上游升级改变，应当失败而不是静默训练错误模块。
+声称初始化等价时，比较实际预处理、token、embedding、logits 和目标值。随机新增模块的状态身份与函数输出等价须分别核验：零残差可以保持输出，但内部随机参数未必与另一次构造相同。
 
-Web 与 SAT backbone 必须使用各自官方 normalization：
+## 5. 优化与评价语义
 
-```text
-Web mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
-SAT mean=(0.430, 0.411, 0.296), std=(0.213, 0.156, 0.143)
-```
+对比目标必须明确定义正例、负例以及多描述或同义样本的处理。三种 batch 概念不可混用：
 
-SAT 实验加载通用 dino.txt vision head/text encoder 后替换 SAT backbone，属于 head transfer 初始化。报告必须准确命名为 `SAT backbone + generic dino.txt initialization + RS tuning`，不能称为官方 SAT-dino.txt。
+- physical batch：一次前向的样本数；
+- optimizer effective batch：每次更新累计消费的样本数；
+- contrastive batch：单次 softmax 可见的候选集合。
 
-## 7. Loss 与 batch 语义
+梯度累积不扩大单次对比集合；历史 queue 的 embedding 可能过时，也可能包含语义正例。queue、跨卡候选聚合或其他扩展必须单独定义和验证，不能静默改变 loss 语义。
 
-主损失是 batch 内对称 InfoNCE。图文第 `i` 项必须是正对，任何数据增强都不得打乱配对顺序。
+验证使用固定 manifest、顺序和预处理，关闭随机增强及训练 queue，保持 `eval()`。分组对比 loss 必须固定分组大小与尾组处理；仅扩大前向吞吐 batch 不应改变指标分组。
 
-需要特别区分：
+分组 loss 不替代全局 retrieval。检索必须记录候选池、正例关系和双向指标；分类必须固定 prompt 与类别映射。外部保持集、checkpoint 选择集与最终测试用途应提前声明，记录已被开发过程观察过的数据。
 
-- physical batch：一次 forward 的样本数；
-- optimizer effective batch：physical batch × gradient accumulation；
-- contrastive batch：一次 softmax 可见的当前样本数。
+## 6. 配置、来源和恢复
 
-梯度累积只增大 optimizer effective batch，不增大 contrastive batch。`queue_size > 0` 会加入 detached 历史负样本，但这些 embedding 是 stale negatives。因此：
+配置定义实验意图，运行目录的实际配置、来源记录与产物定义实验身份。当前 TOML 分为 `experiment`、`model`、`data`、`train`；关键变量不能藏在环境变量或脚本常量中。
 
-1. queue on/off 必须单独做消融；
-2. 不得把 queue 宣称为等价于大 batch；
-3. 未来若加入 GradCache 或跨卡 all-gather，必须新增 loss 实现，不在现有函数内隐式改变语义；
-4. logit scale 用 fp32 计算/约束，防止温度失控。
+1. 开始训练后配置不可变。新实验使用新配置与输出目录；对照组只改变声明的变量。
+2. 保存配置原文、项目与上游 commit、权重/tokenizer/manifest hash、seed、运行环境和硬件信息。
+3. checkpoint 原子写入。当前轻量策略仅保存可训练参数，冻结权重由来源身份重新加载。
+4. 恢复还需 optimizer、scheduler、scaler、queue、sampler 消费位置、DataLoader generator、RNG、step 和运行身份。
+5. 严格恢复先校验配置与代码、输入身份；不得用相近配置或改过的 scheduler 总长冒充同一次续跑。
+6. step 0 必须进入 best 候选；当前实现按 validation loss 选 best。外部保持门槛是额外的候选验收，不能把它误写成已实现的联合选模。
+7. 保存初始、中间、末步与 best checkpoint；best 不能替代所有恢复节点。失败实验保留配置、日志和失败原因。
+8. 多 worker 随机加载不自动保证逐样本精确恢复；声明恢复能力必须与 sampler/RNG 测试范围一致。
 
-## 8. 训练可靠性
+新方法若更新 buffer 或其他非参数状态，必须同步审查轻量保存策略是否覆盖全部可变状态；不能假定现有 trainable-only 方案对所有未来模块都充分。
 
-训练必须满足：
+## 7. 演进门槛
 
-1. 优先 bf16；只有硬件不支持时才使用 fp16 scaler；
-2. backbone 保持 `eval()`，alignment/text trainable 模块保持 `train()`；
-3. 记录 seed、torch/CUDA/GPU、DINOv3 commit、权重 hash、manifest hash；
-4. checkpoint 采用先写 `.part` 再原子替换；
-5. checkpoint 只保存 trainable state，不重复保存冻结权重；但必须同时保存 optimizer、scheduler、scaler、queue、已消费 sampler 位置、DataLoader generator 与 RNG 状态、step、配置和运行身份；
-6. validation 必须使用完整固定 manifest、无增强、`model.eval()`、无 queue；`best.pt` 必须在 step 0 初始模型和所有 validation step 中按 validation loss 全局选择，test 集不得参与选模；
-7. 训练中断后不得从“看起来相近”的配置恢复；恢复前必须严格验证配置文本 hash、项目/DINOv3 commit 与所有上游权重、tokenizer、manifest hash；
-8. `num_workers = 0` 的恢复必须重现 sampler/RNG 状态；多 worker 运行可恢复训练状态但不得声称跨进程的随机增强逐样本 bitwise 相同，除非另行保存 worker RNG 状态；
-9. NaN/Inf、空 batch、图像读取失败必须立即失败并指出 sample id；
-10. 首次长训练前依次通过 CPU 数据 smoke test、单 batch CUDA forward、10-step overfit、100-step loss trend、validation/best/resume 和等价 SAT 受限验证。
+沿用 M0–M7 标识，但这里仅定义抽象目的。当前 Web/SAT、10k 等具体协议由[交接的阶段表](PREPARE_HANDOFF.md#2-里程碑与当前定位)统一维护。
 
-## 9. 实验协议
+| 阶段 | 目的与验收方向 |
+| --- | --- |
+| M0 assets | 环境、上游依赖和资产身份可核验 |
+| M1 inference | 初始化输出、预处理与冻结边界正确 |
+| M2 data | 清单、划分、输入质量及审计可追溯 |
+| M3 MVP | 完成训练—验证—评测—恢复闭环 |
+| M4 RQ1 | 冻结协议后完成视觉域的严格对照 |
+| M5 scale | 在同一协议下进行嵌套规模研究 |
+| M6 RQ2 | 固定图片研究文本表达与粒度 |
+| M7 RQ3 | 在稳定全局基线上研究局部对齐 |
 
-RQ1 的 2×2 对照必须拆成清晰命名的实验：
+更换核心数据或方法后，应重新验证相关证据，不能沿用旧路线已通过的门槛。实验文件名不决定科研阶段；探索规模达到某个数字也不表示正式规模研究完成。
 
-| Vision | Language/init | 目的 |
-|---|---|---|
-| Web | official generic dino.txt，不训练 | 官方 baseline |
-| SAT | official generic head transfer，不训练 | vision-domain diagnostic |
-| Web | RS text tuning | language-domain contribution |
-| SAT | RS text tuning | domain-matched system |
+## 8. 开发检查与资产管理
 
-最低报告规范：
+检查应匹配改动风险：文档变更检查链接、命令参数和代码一致性；数据工具检查确定性、拒绝错误输入与审计；模型或训练变更再验证冻结、输出、数值与恢复。
 
-1. 主结果至少 3 个 seed，prototype 可先 seed 11；
-2. 10k、50k、full 的 manifest 固定并嵌套，不能各自重新随机抽样；
-3. 选择 checkpoint 的指标与最终 test 指标分离；
-4. retrieval 报 I→T/T→I Recall@1/5/10、median rank；
-5. zero-shot 分类固定 prompt templates 并纳入版本控制；
-6. Web/SAT 比较使用相同 resolution、batch/loss、训练步数和数据顺序；
-7. 任何失败实验都保留配置和最后日志，失败原因写入实验登记表。
-
-## 10. 代码质量门槛
-
-每个合并到主分支的变化至少通过：
+代码变更的基本检查为：
 
 ```bash
 ruff check .
@@ -207,35 +138,12 @@ pytest
 python -m compileall -q src tools
 ```
 
-模型或训练变化还需通过：
+测试不下载权重或依赖外网。真实权重、GPU 和训练 smoke 属于独立集成验证，使用该方法对应的配置；历史配置不能充当所有新方法的默认 smoke。通过单元测试不代表已通过科研门槛。
 
-```bash
-dinotxt-rs-smoke --config configs/train_mvp_web.toml
-dinotxt-rs-smoke --config configs/train_mvp_sat.toml
-```
+第三方源码保持外部依赖，固定版本；升级单独记录并核验接口、预处理和初始化，不与方法变更混合。数据、权重、输出和凭据不进入 Git；清理前确认可恢复副本。下载镜像不改变资产身份，发布遵守上游模型与数据许可。
 
-新增功能需要最小单元测试；修 bug 必须先添加可复现该 bug 的测试。测试不得下载权重或依赖外网。涉及真实权重的检查属于显式 integration/smoke test。
+## 9. 文档维护契约
 
-## 11. 大文件、凭据与服务器规则
+README 只做导航。科研文档维护问题与论证逻辑，本文维护稳定开发规则，交接维护当前实现、数值、下一步与操作步骤。配置和报告仍是核验依据；文档不能覆盖或修改历史实验事实。
 
-1. checkpoint、数据、输出和 `.env` 永不进入 Git；
-2. Hugging Face token、Meta 签名 URL、对象存储凭据不得写入配置、日志或 shell history；
-3. 镜像只改变传输路径，不改变文件内容；下载后仍验证官方 hash；
-4. 来源不明且 hash 不匹配的“网盘权重”不得用于报告实验；
-5. AutoDL 关机前确认下载完成、hash 通过、关键日志已保存到数据盘；
-6. 不删除原始数据或旧 checkpoint，除非已经确认有第二份可恢复副本。
-
-## 12. 分支演进顺序
-
-只有上一阶段达到验收条件才进入下一阶段：
-
-1. `M0 assets`：环境、四个权重文件、ChatEarthNet metadata/RGB 下载并校验；
-2. `M1 inference`：Web/SAT smoke、官方 dino.txt embedding 与 patch shape 正确；
-3. `M2 data`：10k manifest、泄漏/坏图统计、DataLoader throughput；
-4. `M3 MVP`：Web 10k 训练稳定、retrieval 指标可计算；
-5. `M4 RQ1`：SAT 10k 严格对照；
-6. `M5 scale`：50k/full；
-7. `M6 RQ2`：自然/结构化/层级文本；
-8. `M7 RQ3`：只有前述结论稳定后才加入 local alignment。
-
-这套顺序的核心不是限制探索，而是确保每一项新增复杂度都有一个已经冻结、可比较的参照物。
+更新交接时写清：核验到哪个版本、哪些证据已落盘、哪些仅有历史记录、哪些仍待实现，以及下一步通过或失败后的分支。一个事实只在一处完整维护，其他文档使用链接。

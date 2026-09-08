@@ -212,6 +212,61 @@ def load_evaluation_model(
     )
 
 
+def load_official_reference_model(config: Config) -> EvaluationModel:
+    """Load the unwrapped official model as an output-parity reference.
+
+    A training config may request a randomly initialized adapter. Constructing
+    that adapter again is not an independent official reference and does not
+    reproduce its original random parameter identity. This loader therefore
+    deliberately omits every project adapter and freezes the official model.
+    """
+    device = torch.device(config.train.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Evaluation requested CUDA but torch.cuda.is_available() is false")
+    input_hashes = _config_input_hashes(config)
+    model, tokenizer = load_official_dinotxt(
+        config.model.dinov3_repo,
+        config.model.backbone_weights,
+        config.model.dinotxt_weights,
+        config.model.bpe_vocab,
+    )
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    counts = {
+        "total": sum(parameter.numel() for parameter in model.parameters()),
+        "trainable": 0,
+    }
+    model.to(device).eval()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    return EvaluationModel(
+        model=model,
+        tokenizer=tokenizer,
+        config=config,
+        device=device,
+        metadata={
+            "model_variant": "official_without_image_adapter",
+            "model_config": str(config.source.resolve()),
+            "model_config_sha256": sha256_text(config.source.read_text(encoding="utf-8")),
+            "backbone_domain": config.model.backbone_domain,
+            "backbone_weights": {
+                "path": str(config.model.backbone_weights.resolve()),
+                "sha256": input_hashes["backbone_weights"],
+            },
+            "dinotxt_weights": {
+                "path": str(config.model.dinotxt_weights.resolve()),
+                "sha256": input_hashes["dinotxt_weights"],
+            },
+            "bpe_vocab": {
+                "path": str(config.model.bpe_vocab.resolve()),
+                "sha256": input_hashes["bpe_vocab"],
+            },
+            "trainable_parameters": counts,
+            "checkpoint": None,
+        },
+    )
+
+
 class _ImageRecords(Dataset[dict[str, Any]]):
     def __init__(self, records: Sequence[dict[str, str]], transform: Any) -> None:
         self.records = records

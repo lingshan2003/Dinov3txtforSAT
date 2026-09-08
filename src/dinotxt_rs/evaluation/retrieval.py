@@ -57,6 +57,57 @@ def load_rsicd_records(
     return images, sorted(captions, key=lambda record: record["id"])
 
 
+def load_paired_records(
+    path: Path,
+    *,
+    expected_split: str,
+    expected_source: str | None = None,
+) -> list[dict[str, str]]:
+    """Load a canonical manifest whose rows define one-to-one image/text positives."""
+    expected_split = expected_split.lower()
+    if not expected_split:
+        raise ValueError("Paired retrieval expected_split must be nonempty")
+    if expected_source is not None and not expected_source:
+        raise ValueError("Paired retrieval expected_source must be nonempty when provided")
+
+    records: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    seen_images: set[Path] = set()
+    seen_captions: set[str] = set()
+    required = ("id", "image", "caption", "split", "source")
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}:{line_number}: expected a JSON object")
+        if any(not isinstance(value.get(field), str) or not value[field] for field in required):
+            raise ValueError(f"{path}:{line_number}: missing a required paired field")
+        if value["split"].lower() != expected_split:
+            raise ValueError(f"{path}:{line_number}: expected split={expected_split!r} only")
+        if expected_source is not None and value["source"] != expected_source:
+            raise ValueError(f"{path}:{line_number}: expected source={expected_source!r} only")
+        if value["id"] in seen_ids:
+            raise ValueError(f"{path}:{line_number}: duplicate sample id {value['id']!r}")
+
+        image_path = Path(value["image"])
+        if not image_path.is_file():
+            raise FileNotFoundError(f"{path}:{line_number}: image does not exist: {image_path}")
+        resolved_image = image_path.resolve()
+        if resolved_image in seen_images:
+            raise ValueError(f"{path}:{line_number}: duplicate image in one-to-one manifest")
+
+        normalized_caption = " ".join(value["caption"].split()).casefold()
+        if normalized_caption in seen_captions:
+            raise ValueError(f"{path}:{line_number}: duplicate caption in one-to-one manifest")
+
+        records.append({field: value[field] for field in required})
+        seen_ids.add(value["id"])
+        seen_images.add(resolved_image)
+        seen_captions.add(normalized_caption)
+    if not records:
+        raise ValueError(f"Paired retrieval manifest is empty: {path}")
+    return records
+
+
 def _metric_summary(ranks: torch.Tensor) -> dict[str, float]:
     if ranks.ndim != 1 or not len(ranks) or (ranks < 1).any():
         raise ValueError("Retrieval ranks must be a nonempty one-dimensional positive tensor")
@@ -181,6 +232,63 @@ def evaluate_rsicd_retrieval(
         "split": split,
         "metrics": metrics,
         "counts": {"images": len(image_records), "captions": len(caption_records)},
+        "encoding": {
+            "image": image_stats,
+            "text": text_stats,
+            "image_logit_scale": image_scale,
+            "text_logit_scale": text_scale,
+            "retrieval_chunk_size": retrieval_chunk_size,
+        },
+        "runtime": evaluation_runtime(evaluation_model.device),
+    }
+
+
+def evaluate_paired_retrieval(
+    evaluation_model: EvaluationModel,
+    manifest: Path,
+    *,
+    batch_size: int,
+    num_workers: int,
+    retrieval_chunk_size: int,
+    split: str,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Evaluate global retrieval when each manifest row is exactly one positive pair."""
+    records = load_paired_records(
+        manifest,
+        expected_split=split,
+        expected_source=source,
+    )
+    image_records = [{"id": record["id"], "image": record["image"]} for record in records]
+    image_features, image_scale, image_stats = encode_images(
+        evaluation_model,
+        image_records,
+        batch_size=batch_size,
+        num_workers=num_workers,
+    )
+    text_features, text_scale, text_stats = encode_texts(
+        evaluation_model,
+        [record["caption"] for record in records],
+        batch_size=batch_size,
+    )
+    metrics = retrieval_metrics(
+        image_features,
+        text_features,
+        list(range(len(records))),
+        device=evaluation_model.device,
+        chunk_size=retrieval_chunk_size,
+    )
+    sources = sorted({record["source"] for record in records})
+    return {
+        "format_version": 1,
+        "task": "paired_image_text_global_retrieval",
+        "manifest": manifest_metadata(manifest),
+        "model": evaluation_model.metadata,
+        "split": split.lower(),
+        "sources": sources,
+        "positive_definition": "manifest_row_one_to_one",
+        "metrics": metrics,
+        "counts": {"images": len(records), "captions": len(records), "pairs": len(records)},
         "encoding": {
             "image": image_stats,
             "text": text_stats,

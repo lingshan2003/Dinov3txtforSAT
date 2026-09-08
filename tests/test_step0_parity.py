@@ -11,6 +11,7 @@ from dinotxt_rs.evaluation.common import EvaluationModel
 from dinotxt_rs.evaluation.parity import (
     compare_tensors,
     default_tolerances,
+    parameter_state_fingerprint,
     run_step0_parity,
     tensor_sha256,
     trainable_parameter_fingerprint,
@@ -68,6 +69,15 @@ def test_parameter_fingerprint_detects_weight_change() -> None:
     assert trainable_parameter_fingerprint(second) != first_fingerprint
 
 
+def test_parameter_state_fingerprint_is_order_independent() -> None:
+    weight = torch.tensor([[1.0, 2.0]])
+    bias = torch.tensor([3.0])
+
+    assert parameter_state_fingerprint({"weight": weight, "bias": bias}) == (
+        parameter_state_fingerprint({"bias": bias, "weight": weight})
+    )
+
+
 def test_tensor_sha256_includes_dtype_and_shape() -> None:
     values = torch.tensor([1, 2, 3, 4], dtype=torch.int32)
     assert tensor_sha256(values) == tensor_sha256(values.clone())
@@ -121,31 +131,41 @@ def test_run_step0_parity_passes_for_identical_models(tmp_path, monkeypatch) -> 
     official_model = _TinyParityModel()
     restored_model = _TinyParityModel()
     restored_model.load_state_dict(official_model.state_dict())
-    models = iter(
-        (
-            EvaluationModel(
-                official_model,
-                _TinyTokenizer(),
-                config,
-                torch.device("cpu"),
-                {"checkpoint": None},
-            ),
-            EvaluationModel(
-                restored_model,
-                _TinyTokenizer(),
-                config,
-                torch.device("cpu"),
-                {"checkpoint": {"step": 0, "sha256": "checkpoint"}},
-            ),
-        )
+    for parameter in restored_model.parameters():
+        parameter.requires_grad_(False)
+    restored_model.register_parameter(
+        "adapter_down",
+        torch.nn.Parameter(torch.randn(4, 2)),
+    )
+    official = EvaluationModel(
+        official_model,
+        _TinyTokenizer(),
+        config,
+        torch.device("cpu"),
+        {"model_variant": "official_without_image_adapter", "checkpoint": None},
+    )
+    restored = EvaluationModel(
+        restored_model,
+        _TinyTokenizer(),
+        config,
+        torch.device("cpu"),
+        {"checkpoint": {"step": 0, "sha256": "checkpoint"}},
+    )
+    checkpoint = tmp_path / "step_0000000.pt"
+    torch.save(
+        {"trainable_model": {"adapter_down": restored_model.adapter_down.detach().clone()}},
+        checkpoint,
     )
     monkeypatch.setattr(
-        "dinotxt_rs.evaluation.parity.load_evaluation_model", lambda *args, **kwargs: next(models)
+        "dinotxt_rs.evaluation.parity.load_official_reference_model", lambda *args: official
+    )
+    monkeypatch.setattr(
+        "dinotxt_rs.evaluation.parity.load_evaluation_model", lambda *args, **kwargs: restored
     )
 
     report = run_step0_parity(
         config,
-        checkpoint=tmp_path / "step_0000000.pt",
+        checkpoint=checkpoint,
         training_output=tmp_path,
         input_manifest=manifest,
         batch_size=2,
@@ -154,4 +174,6 @@ def test_run_step0_parity_passes_for_identical_models(tmp_path, monkeypatch) -> 
     assert report["status"] == "pass"
     assert report["checkpoint_step"] == 0
     assert report["trainable_parameters"]["passed"]
+    assert report["trainable_parameters"]["comparison"] == "checkpoint_state_vs_restored_model"
+    assert report["official_model"]["model_variant"] == "official_without_image_adapter"
     assert all(value["passed"] for value in report["comparisons"].values())
