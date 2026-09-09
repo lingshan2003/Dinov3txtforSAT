@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-validation-forward-batch-size", type=int)
     parser.add_argument("--require-best-checkpoint", action="store_true")
     parser.add_argument("--required-resume-step", action="append", type=int, default=[])
+    parser.add_argument("--forbid-resume", action="store_true")
     return parser.parse_args()
 
 
@@ -104,6 +105,7 @@ def verify_training_run(
     expected_validation_forward_batch_size: int | None = None,
     require_best_checkpoint: bool = False,
     required_resume_steps: tuple[int, ...] = (),
+    forbid_resume: bool = False,
 ) -> dict[str, Any]:
     if expected_steps <= 0:
         raise ValueError("expected_steps must be positive")
@@ -111,6 +113,8 @@ def verify_training_run(
         raise ValueError("expected_target_steps must be at least expected_steps")
     if require_completed and require_incomplete:
         raise ValueError("A run cannot be required to be both completed and incomplete")
+    if forbid_resume and required_resume_steps:
+        raise ValueError("A run cannot both forbid and require resume history")
     if require_fixed_monitor and (
         expected_fixed_monitor_manifest_sha256 is None or fixed_monitor_every is None
     ):
@@ -341,8 +345,13 @@ def verify_training_run(
             raise FileNotFoundError(f"Best checkpoint source is missing or empty: {best_source}")
 
     resume_history: list[dict[str, Any]] = []
-    if required_resume_steps:
-        resume_history_path = output_dir / "resume_history.jsonl"
+    resume_history_path = output_dir / "resume_history.jsonl"
+    if forbid_resume:
+        if resume_history_path.exists():
+            resume_history = _read_metrics(resume_history_path)
+            if resume_history:
+                raise ValueError("Run must start from initialization, but resume history exists")
+    elif required_resume_steps:
         if not resume_history_path.is_file():
             raise FileNotFoundError(f"Missing resume history: {resume_history_path}")
         resume_history = _read_metrics(resume_history_path)
@@ -430,7 +439,7 @@ def verify_training_run(
     if best_checkpoint is not None:
         report["best_checkpoint"] = str(best_checkpoint)
         report["best_validation_step"] = summary["validation"]["best_step"]
-    if required_resume_steps:
+    if required_resume_steps or forbid_resume:
         report["resume_history"] = resume_history
     return report
 
@@ -458,6 +467,7 @@ def main() -> None:
         expected_validation_forward_batch_size=args.expected_validation_forward_batch_size,
         require_best_checkpoint=args.require_best_checkpoint,
         required_resume_steps=tuple(args.required_resume_step),
+        forbid_resume=args.forbid_resume,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

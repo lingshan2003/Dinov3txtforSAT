@@ -128,3 +128,40 @@ def test_load_skyscript_adapter_configs() -> None:
         assert replication.data == pilot.data
         assert replication.model == pilot.model
         assert replication.train == pilot.train
+
+
+def test_load_skyscript_gate_s2_config() -> None:
+    baseline = load_config(Path("configs/skyscript_web_adapter_100step.toml"))
+    stability = load_config(Path("configs/skyscript_web_adapter_500step_seed11.toml"))
+
+    assert stability.experiment.seed == 11
+    assert stability.model == baseline.model
+    assert stability.data.train_manifest == baseline.data.train_manifest
+    assert stability.data.val_manifest == baseline.data.val_manifest
+    assert stability.data.validation_batch_size == baseline.data.validation_batch_size
+    assert (
+        stability.data.validation_forward_batch_size
+        == baseline.data.validation_forward_batch_size
+    )
+    assert stability.data.validation_num_workers == baseline.data.validation_num_workers
+    assert stability.data.validation_prefetch_factor == baseline.data.validation_prefetch_factor
+    assert stability.data.num_workers == baseline.data.num_workers
+    assert stability.data.train_augmentation == baseline.data.train_augmentation
+    assert stability.data.shuffle_train == baseline.data.shuffle_train
+    assert stability.train.max_steps == 500
+    assert stability.train.warmup_steps == 50
+    assert stability.train.validation_every == 50
+    assert stability.train.checkpoint_every == 50
+    for field in (
+        "device",
+        "precision",
+        "batch_size",
+        "gradient_accumulation",
+        "learning_rate",
+        "weight_decay",
+        "max_grad_norm",
+        "queue_size",
+        "validation_at_start",
+        "log_every",
+    ):
+        assert getattr(stability.train, field) == getattr(baseline.train, field)

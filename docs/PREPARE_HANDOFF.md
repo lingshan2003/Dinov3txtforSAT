@@ -1,11 +1,12 @@
-# 最新交接：SkyScript Gate S0 通过与跨 seed 复现
+# 最新交接：SkyScript Gate S1 通过与 500-step Gate S2
 
 更新时间：2026-09-08
 
 当前状态：项目已经完成基础工程闭环，也完成了对旧 ChatEarthNet 路线的失败诊断。当前主线已切换为
 **SkyScript unique-caption 数据 + 冻结官方 dino.txt + 小型 image embedding adapter**。首个 Web
-100-step 实验已通过 Gate S0：4,055 条 held-out SkyScript validation 的全局 retrieval 明显提升，
-RSICD-val mean recall 得到保持。当前应进入 Gate S1 跨 seed 复现，不直接延长到 500 step。
+100-step 实验已通过 Gate S0；随后 seed 11/23/47 全部通过 Gate S1，4,055 条 held-out SkyScript
+validation 的 loss 和全局 retrieval 跨 seed 稳定改善，RSICD-val mean recall 得到保持。当前进入
+Gate S2：从官方初始化开始新的 500-step 稳定性 pilot，并在 step 100/250/500 分段设门槛。
 
 这份文档从当前状态重新编写。ChatEarthNet、历史 500-step pilot 和后续 A/B/C 诊断只作为历史背景
 总结；它们不再代表当前数据协议、当前模型更新范围或下一轮训练入口。
@@ -19,17 +20,18 @@ RSICD-val mean recall 得到保持。当前应进入 Gate S1 跨 seed 复现，�
 | 基础工程 | 模型加载、训练、validation/best、严格 resume、下游评测和审计工具 | adapter parity 与一一配对 retrieval 已完成服务器实测 |
 | 历史路线 | ChatEarthNet pilot、外部退化与 A/B/C、A/C 诊断 | 已停止作为当前主训练协议，保留失败分析与原始产物 |
 | 当前数据 | SkyScript images2+images3 唯一 caption 选择、抽取、36,495/4,055 拆分和 manifest | global77 train/validation 精确文件和解码像素 overlap 均为 0 |
-| 当前方法 | adapter-only 100-step seed 11 | SkyScript mean recall 提升且 RSICD-val 平均保持，Gate S0 已通过 |
-| 下一步 | Gate S1 | seed 23/47 不可变配置、执行脚本和三 seed 汇总工具已准备，待提交后在服务器运行 |
+| 当前方法 | adapter-only 100-step seeds 11/23/47 | 三个 seed 的 SkyScript retrieval 均提升且 RSICD-val 平均保持，Gate S1 已通过 |
+| 下一步 | Gate S2 | 新 500-step seed11 配置、分段执行脚本和汇总工具已准备，待提交后在服务器运行 |
 
-**本次文档核验范围**：训练方法 commit 为 `4c564d25f3946531055e26dea6890fb892fed2fc`；
-Gate S0 评测与编排代码已进入 `9202423`。本次读取了用户从服务器下载的
-`outputs/skyscript_gate_s0_seed11/summary.json` 副本，报告状态为 `pass` 且六项检查全部为 true。
-本次未直接登录服务器读取各子报告；服务器上的 `preflight.txt`、parity、overlap、逐 checkpoint
-retrieval 报告和训练原始产物仍是完整证据来源，下载的 summary 是本次结果复核依据。
+**本次文档核验范围**：seed11 训练方法 commit 为
+`4c564d25f3946531055e26dea6890fb892fed2fc`；Gate S0 代码进入 `9202423`；seed23/47 训练与 Gate
+S1 编排 commit 为 `bda81a2d27c0ded8529937c80d02ecbfccdcb6ae`。本次读取了用户从服务器下载的
+`outputs/skyscript_gate_s1/summary.json` 副本，报告状态为 `pass`，三个 seed 的全部预设门槛均为
+true。本次未直接登录服务器读取各子报告；服务器上的 `preflight.txt`、parity、overlap、逐
+checkpoint retrieval 报告和训练原始产物仍是完整证据来源，下载的 summary 是本次结果复核依据。
 
-“当前工作”指跨 seed 复现准备，不表示服务器此刻正在训练。阅读顺序：第 4–6 节了解候选与 S0
-证据，第 8 节接手 S1；需要重建环境或数据时再看第 12 节。
+“当前工作”指 Gate S2 代码准备，不表示服务器此刻正在训练。阅读顺序：第 4–6 节了解候选与 S0
+证据，第 8.2 节了解 S1 复现结果，第 8.3 节执行 S2；需要重建环境或数据时再看第 12 节。
 
 ## 2. 里程碑与当前定位
 
@@ -59,7 +61,8 @@ retrieval 报告和训练原始产物仍是完整证据来源，下载的 summar
 - AutoDL 项目：`/root/autodl-tmp/Dinov3txtforSAT`；
 - 本地项目：`/Users/wangyue/Documents/ChatGPT/Dinov3txtforSAT`；
 - 服务器虚拟环境：`/root/autodl-tmp/Dinov3txtforSAT/.venv`；
-- 当前 SkyScript 实验项目 commit：`4c564d25f3946531055e26dea6890fb892fed2fc`；
+- 当前 SkyScript seed11 训练 commit：`4c564d25f3946531055e26dea6890fb892fed2fc`；
+- seed23/47 训练与 S1 编排 commit：`bda81a2d27c0ded8529937c80d02ecbfccdcb6ae`；
 - DINOv3 固定 commit：`6876159a11b4df116f30f667f8c9888617df0751`；
 - 已验证服务器环境：Python 3.12.3、PyTorch `2.7.1+cu128`、CUDA 12.8、RTX 4090、BF16。
 
@@ -322,7 +325,7 @@ Gate S0 后的结论升级为：
   scheduler 均不同；
 - 不能断言改善完全来自 SkyScript 数据质量；当前不是正交消融；
 - 不能把 RSICD-val mean recall 保持写成外部双向能力全面提升或跨数据源泛化已经成立；
-- 不能断言结果跨 seed 稳定；当前完整证据只有 seed 11；
+- 跨 seed 稳定结论只覆盖 S1 预先指定的 seed11/23/47 和当前 100-step 协议，不能外推到长日程；
 - 不能断言 100 step 后继续训练仍会改善；历史项目曾在更长训练中发生反转；
 - 不能断言 Web backbone 优于 SAT；尚未做当前协议下的严格对照；
 - 不能宣称 local alignment 改善，因为 adapter 不作用于 patch tokens。
@@ -413,7 +416,7 @@ outputs/skyscript_gate_s0_seed11/summary.json
 这些报告与当前 100-step 训练目录都必须保留。S0 已结束，不需要重复运行来寻找更好的 checkpoint，
 也不能在同一 RSICD-val 上继续调节门槛。
 
-### 8.2 Gate S1：100-step 跨 seed 复现
+### 8.2 Gate S1：已完成并通过
 
 S0 通过后，只改变 seed 和输出目录，以 seed 23、47 从官方初始化重复完全相同的 100-step 协议。
 数据、caption、adapter 256、LR、warmup、queue 和 augmentation 都不改变。
@@ -425,9 +428,24 @@ S0 通过后，只改变 seed 和输出目录，以 seed 23、47 从官方初始
 - RSICD-val 保持性通过；
 - 所有 loss、梯度、checkpoint 和 provenance 核验通过。
 
-最终报告三个 seed 的均值、标准差和逐 seed 曲线。不能只汇报最好的一次。
+最终报告已经包含三个 seed 的均值、sample standard deviation（ddof=1）和逐 seed 曲线，没有只
+汇报最好的一次。主报告为 `outputs/skyscript_gate_s1/summary.json`，状态为 `pass`。
 
-S1 本地代码准备已经完成，但服务器实验尚未运行：
+| seed | step 100 validation loss | SkyScript mean recall | 相对 step 0 | RSICD mean recall 相对官方 |
+| ---: | ---: | ---: | ---: | ---: |
+| 11 | 0.9726497 | 0.1138512 | +0.0275791 | +0.0021938 |
+| 23 | 0.9662531 | 0.1161118 | +0.0298397 | +0.0012492 |
+| 47 | 0.9638958 | 0.1169338 | +0.0306617 | +0.0068251 |
+
+三 seed 平均 step100 validation loss 为 0.9675995±0.0045296；SkyScript mean recall 为
+0.1156323±0.0015963，相对共同 step0 平均绝对提升 0.0293602，相对约 34%。RSICD mean recall
+相对官方平均提升 0.0034227±0.0029842，三个 seed 均未发生 mean recall 退化。
+
+RSICD 的方向性权衡也跨 seed 重现：image→text 指标改善，而 text→image 的 recall 和 rank 均变差。
+因此 S1 支持“跨 seed 稳定改善同源全局 retrieval，并保持外部平均能力”，仍不支持“外部双向能力
+全面提升”。该方向性现象在 S2 继续原样报告，不根据已观察结果事后修改 mean-recall 主门槛。
+
+S1 代码与证据入口：
 
 - `configs/skyscript_web_adapter_100step_seed23.toml` 和
   `configs/skyscript_web_adapter_100step_seed47.toml` 只改变实验名称、seed 和输出目录；manifest
@@ -436,24 +454,13 @@ S1 本地代码准备已经完成，但服务器实验尚未运行：
   和最终三 seed 汇总；脚本可选择 `--seed 23`、`--seed 47` 或默认 `all`；
 - `tools/summarize_skyscript_gate_s1.py` 核验三个 run 的实际 `config.toml`，只允许上述三个实验身份
   字段不同，并输出逐 seed 曲线以及 mean/sample standard deviation（ddof=1）；
-- 若某个 seed 数值不通过，`all` 模式仍会完成另一个 seed 并生成 `fail` 汇总；身份、产物或协议错误
-  则立即停止；
-- 默认新训练从官方初始化开始。只有运行在 checkpoint 边界安全中断，且 metrics/validation 尾部与
-  checkpoint 精确一致时，才允许显式 `--resume-seed23` 或 `--resume-seed47`；不能从 seed 11
-  checkpoint 续跑。
+- seed 23/47 逐 seed 报告分别在 `outputs/skyscript_gate_s1_seed23/` 和
+  `outputs/skyscript_gate_s1_seed47/`；
+- 训练 provenance 中 seed11 的项目 commit 为 `4c564d25f3946531055e26dea6890fb892fed2fc`，
+  seed23/47 为 `bda81a2d27c0ded8529937c80d02ecbfccdcb6ae`。这两个 commit 之间没有改变训练器、adapter
+  或模型训练实现，差异包含 S0/S1 评测、配置、编排和文档；正式报告仍保留这一 provenance 差异。
 
-提交并推送这些文件后，在服务器项目根目录建议进入 `tmux` 再执行：
-
-```bash
-git pull --ff-only
-tmux new-session -s skyscript-s1 'bash scripts/run_skyscript_gate_s1.sh; exec bash'
-```
-
-脚本不能 `source`。完整通过后的主报告为 `outputs/skyscript_gate_s1/summary.json`；seed 23/47
-逐 seed 报告分别在 `outputs/skyscript_gate_s1_seed23/` 和
-`outputs/skyscript_gate_s1_seed47/`。在该汇总实际为 `pass` 前不得进入 S2。
-
-### 8.3 Gate S2：新的 500-step 稳定性 pilot
+### 8.3 Gate S2：500-step 稳定性 pilot（代码已准备）
 
 S1 通过后创建一个新的、不可变的 500-step 配置。保持当前数据、`title_raw`、adapter、无增强和
 无 queue。建议使用相同 peak LR `1e-4`、50-step warmup 和 cosine decay。
@@ -470,6 +477,31 @@ S1 通过后创建一个新的、不可变的 500-step 配置。保持当前数�
 在 step 0/100/250/500 运行 SkyScript 全局 retrieval 和 RSICD-val；SkyScript loss 至少每 25 或
 50 step 验证。进入下一段前要求当前 validation 低于 step 0、外部保持通过、best 与 resume 身份
 完整。任一门槛失败立即停止，不以“继续训练可能恢复”为理由越过。
+
+当前已经准备：
+
+- 不可变配置 `configs/skyscript_web_adapter_500step_seed11.toml`：与 100-step seed11 相比，只改变
+  实验名称/输出目录、`max_steps=500`、`warmup_steps=50`、`validation_every=50` 和
+  `checkpoint_every=50`；seed、数据、模型、adapter、batch、LR、无增强及无 queue 均不变；
+- `scripts/run_skyscript_gate_s2.sh`：强制从官方初始化开始，依次在 100、250、500 停止；每段先
+  核验产物和 resume 历史，再运行 parity、overlap、SkyScript retrieval、RSICD-val 并生成不可变
+  stage summary；任何 stage 不通过都不会进入下一段；
+- `tools/summarize_skyscript_gate_s2.py`：交叉核验 manifest、checkpoint step、validation、parity、
+  overlap、retrieval 和 resume 边界，生成逐阶段与最终汇总；
+- `tools/verify_training_run.py` 新增 `--forbid-resume`，用于证明第一段确实从官方初始化开始；后两段
+  分别要求 resume history 包含 step100 和 step100/250。
+
+提交并推送后，在服务器项目根目录执行：
+
+```bash
+git pull --ff-only
+tmux new-session -s skyscript-s2 'bash scripts/run_skyscript_gate_s2.sh; exec bash'
+```
+
+脚本不能 `source`。默认连续执行三个阶段，但只会在当前阶段通过后继续。也可使用
+`--stop-after-stage 100` 或 `--stop-after-stage 250` 主动分次运行；之后用更大的 stage 值重新运行，
+脚本会核验并复用已有结果。最终主报告为 `outputs/skyscript_gate_s2_seed11/summary.json`，训练目录为
+`outputs/skyscript_images23_top30raw_imageadapter256_36495_500step_seed11/`。
 
 ### 8.4 Gate S3：单因素消融
 
@@ -501,9 +533,9 @@ M4 得到可复现且保持外部能力的结果后，再进入 M5，比较：
 ## 9. 当前冻结边界
 
 - 不直接续跑当前 SkyScript step-100 checkpoint；
-- 不把当前结果称为 M4、M5、跨 seed 稳定或 RSICD 双向能力全面提升；
+- 不把当前结果称为 M4、M5 或 RSICD 双向能力全面提升；跨 seed 稳定仅限 S1 的三个既定 seed；
 - 不用 RSICD test 或全量 EuroSAT 循环调参；
-- 不在 S1 通过前创建新的 500-step 长训练配置；
+- 不在 S2 三个阶段全部通过前进入 S3、正式 M4 或其他更大实验；
 - 不恢复 4,096 negative queue；
 - 不加入随机增强；
 - 不解冻官方 backbone、vision head 或文本塔；
@@ -548,7 +580,7 @@ sampler 和 RNG 状态。任何清理前都应先生成只读盘点并完成异�
 
 | 任务 | 入口 |
 | --- | --- |
-| 当前实验参数 | seed 11 基线 `configs/skyscript_web_adapter_100step.toml`；S1 复现 `configs/skyscript_web_adapter_100step_seed23.toml`、`configs/skyscript_web_adapter_100step_seed47.toml` |
+| 当前实验参数 | seed 11 基线 `configs/skyscript_web_adapter_100step.toml`；S1 复现 `configs/skyscript_web_adapter_100step_seed23.toml`、`configs/skyscript_web_adapter_100step_seed47.toml`；S2 `configs/skyscript_web_adapter_500step_seed11.toml` |
 | 定向抽取、确定性拆分 | `tools/extract_skyscript_subset.py`、`tools/split_skyscript_selection.py` |
 | manifest 与文本预算 | `tools/prepare_skyscript.py`、`tools/prepare_global77_manifest.py`、`tools/audit_manifest_text.py` |
 | 当前适配模块与冻结 | `src/dinotxt_rs/models/embedding_adapter.py`、`src/dinotxt_rs/models/official_dinotxt.py` |
@@ -557,6 +589,8 @@ sampler 和 RNG 状态。任何清理前都应先生成只读盘点并完成异�
 | Gate S0 完整执行 | `scripts/run_skyscript_gate_s0.sh`（使用 `bash` 执行，不能 `source`） |
 | Gate S1 训练、逐 seed 核验与汇总 | `scripts/run_skyscript_gate_s1.sh`（使用 `bash` 执行，不能 `source`） |
 | Gate S1 三 seed 汇总 | `tools/summarize_skyscript_gate_s1.py` |
+| Gate S2 分段训练、门槛与汇总 | `scripts/run_skyscript_gate_s2.sh`（使用 `bash` 执行，不能 `source`） |
+| Gate S2 阶段/最终汇总 | `tools/summarize_skyscript_gate_s2.py` |
 | 历史异常产物盘点 | `tools/inspect_training_artifacts.py` |
 
 历史 `run_m4_*`、`run_m5_*` 和 ChatEarthNet pilot 脚本仅用于追溯，不能当作当前 SkyScript

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from tools.verify_training_run import verify_training_run
 
 
@@ -165,6 +167,14 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
     assert report["validation_loss"]["first"] == 1.0
     assert report["best_checkpoint"] == str(best_checkpoint)
     assert report["resume_history"][0]["checkpoint_step"] == 1
+
+    with pytest.raises(ValueError, match="resume history exists"):
+        verify_training_run(
+            output_dir=output,
+            expected_steps=2,
+            expected_train_manifest_sha256="manifest",
+            forbid_resume=True,
+        )
 
     summary_path = output / "training_summary.json"
     partial_summary = json.loads(summary_path.read_text(encoding="utf-8"))
