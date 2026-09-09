@@ -102,7 +102,9 @@
 2. 保存配置原文、项目与上游 commit、权重/tokenizer/manifest hash、seed、运行环境和硬件信息。
 3. checkpoint 原子写入。当前轻量策略仅保存可训练参数，冻结权重由来源身份重新加载。
 4. 恢复还需 optimizer、scheduler、scaler、queue、sampler 消费位置、DataLoader generator、RNG、step 和运行身份。
-5. 严格恢复先校验配置与代码、输入身份；不得用相近配置或改过的 scheduler 总长冒充同一次续跑。
+5. 恢复时严格校验配置原文、输入与权重 hash、上游版本和状态结构；这些不一致时拒绝恢复。项目
+   commit 必须记录，但仅作为 provenance 告警：commit 改变时允许恢复，并在日志与 resume history
+   中同时记录 checkpoint commit 和当前 commit。不得用相近配置或改过的 scheduler 总长冒充同一次续跑。
 6. step 0 必须进入 best 候选；当前实现按 validation loss 选 best。外部保持门槛是额外的候选验收，不能把它误写成已实现的联合选模。
 7. 保存初始、中间、末步与 best checkpoint；best 不能替代所有恢复节点。失败实验保留配置、日志和失败原因。
 8. 多 worker 随机加载不自动保证逐样本精确恢复；声明恢复能力必须与 sampler/RNG 测试范围一致。

@@ -439,7 +439,7 @@ def train(
 
     if resume is not None:
         resumed_from = resume.resolve()
-        global_step, run_state = load_checkpoint(
+        global_step, run_state, identity_check = load_checkpoint(
             resumed_from,
             model=model,
             optimizer=optimizer,
@@ -494,6 +494,7 @@ def train(
                 "checkpoint_step": global_step,
                 "target_steps": config.train.max_steps,
                 "run_identity": identity,
+                "identity_check": identity_check,
             },
         )
         print(f"resumed_from={resumed_from} step={global_step}", flush=True)

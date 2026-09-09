@@ -284,8 +284,11 @@ write_preflight() {
     echo "retention_margin_absolute_mean_recall=0.01"
   } > "${temporary}"
   if [[ -e "${destination}" ]]; then
-    if ! cmp -s "${temporary}" "${destination}"; then
-      echo "Existing M4 SAT artifacts belong to a different preflight identity:" >&2
+    if ! python tools/verify_preflight_compatibility.py \
+        --stored "${destination}" \
+        --current "${temporary}" \
+        2>&1 | tee -a "${GATE_DIR}/runner_history.log"; then
+      echo "Existing M4 SAT artifacts differ in a frozen preflight field:" >&2
       diff -u "${destination}" "${temporary}" >&2 || true
       mv "${temporary}" "${GATE_DIR}/preflight.mismatch.$(date +%Y%m%dT%H%M%S)"
       exit 1
@@ -296,6 +299,49 @@ write_preflight() {
   fi
 }
 write_preflight
+
+python - "${GATE_DIR}/runner_history.jsonl" "${GATE_DIR}/preflight.txt" \
+  "${STOP_AFTER_STAGE}" <<'PY'
+import datetime
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+history_path = Path(sys.argv[1])
+preflight_path = Path(sys.argv[2])
+requested_stage = int(sys.argv[3])
+stored = dict(
+    line.split("=", 1)
+    for line in preflight_path.read_text(encoding="utf-8").splitlines()
+)
+current_commit = subprocess.run(
+    ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+).stdout.strip()
+initial_commit = stored.get("project_commit")
+changed_files: list[str] = []
+if initial_commit and initial_commit != current_commit:
+    diff = subprocess.run(
+        ["git", "diff", "--name-only", f"{initial_commit}..{current_commit}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if diff.returncode == 0:
+        changed_files = [line for line in diff.stdout.splitlines() if line]
+record = {
+    "format_version": 1,
+    "timestamp_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+    "requested_stage": requested_stage,
+    "initial_project_commit": initial_commit,
+    "current_project_commit": current_commit,
+    "project_commit_match": initial_commit == current_commit,
+    "changed_files_since_initial_commit": changed_files,
+}
+with history_path.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+print(f"runner_history={history_path}")
+PY
 
 if [[ ! -e "${TRAIN_VAL_REPORT}" ]]; then
   if [[ ! -e "${TRAIN_VAL_SHARED}" ]]; then

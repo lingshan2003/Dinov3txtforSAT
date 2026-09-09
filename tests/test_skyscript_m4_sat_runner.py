@@ -18,6 +18,8 @@ def test_m4_sat_runner_defaults_to_stage100_and_uses_formal_paths() -> None:
     ) in source
     assert 'GATE_DIR="outputs/skyscript_gate_m4_sat_seed11"' in source
     assert "tools/summarize_skyscript_gate_m4_sat.py stage" in source
+    assert "tools/verify_preflight_compatibility.py" in source
+    assert '"changed_files_since_initial_commit": changed_files' in source
 
 
 def test_m4_sat_runner_help_is_available_without_environment() -> None:

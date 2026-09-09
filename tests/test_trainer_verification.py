@@ -8,6 +8,7 @@ from PIL import Image
 from torch.utils.data import DataLoader
 
 from dinotxt_rs.config import Config, DataConfig, ExperimentConfig, ModelConfig, TrainConfig
+from dinotxt_rs.training.provenance import build_provenance as real_build_provenance
 from dinotxt_rs.training.trainer import _evaluate_validation, _set_training_mode, train
 
 
@@ -179,7 +180,9 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
     assert not model.visual_model.backbone.training
 
 
-def test_validation_best_checkpoint_and_strict_resume(tmp_path) -> None:
+def test_validation_best_checkpoint_and_strict_resume(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     image_paths = []
     for index, color in enumerate(((20, 40, 60), (80, 100, 120), (130, 140, 150), (30, 80, 90))):
         image_path = tmp_path / f"image-{index}.png"
@@ -226,10 +229,24 @@ def test_validation_best_checkpoint_and_strict_resume(tmp_path) -> None:
         source=source,
     )
 
+    active_commit = "training-commit"
+
+    def build_provenance_with_active_commit(config: Config) -> dict:
+        payload = real_build_provenance(config)
+        payload["project_commit"] = active_commit
+        return payload
+
+    monkeypatch.setattr(
+        "dinotxt_rs.training.trainer.build_provenance",
+        build_provenance_with_active_commit,
+    )
+
     train(config, TinyModel(), TinyTokenizer(), stop_after_step=1)
     checkpoint = output_dir / "step_0000001.pt"
     assert checkpoint.is_file()
-    summary_path = train(config, TinyModel(), TinyTokenizer(), resume=checkpoint)
+    active_commit = "bugfix-commit"
+    with pytest.warns(RuntimeWarning, match="Project commit changed across checkpoint resume"):
+        summary_path = train(config, TinyModel(), TinyTokenizer(), resume=checkpoint)
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     validation = [
@@ -250,6 +267,13 @@ def test_validation_best_checkpoint_and_strict_resume(tmp_path) -> None:
     assert [record["step"] for record in _read_jsonl(output_dir / "metrics.jsonl")] == [1, 2]
     assert resume_history[0]["checkpoint_step"] == 1
     assert isinstance(resume_history[0]["checkpoint_sha256"], str)
+    assert resume_history[0]["identity_check"] == {
+        "status": "warning",
+        "blocking_mismatches": [],
+        "advisory_mismatches": ["project_commit"],
+        "checkpoint_project_commit": "training-commit",
+        "current_project_commit": "bugfix-commit",
+    }
 
     source.write_text("[experiment]\nname = 'changed'\n", encoding="utf-8")
     with pytest.raises(ValueError, match="config.toml does not exactly match"):

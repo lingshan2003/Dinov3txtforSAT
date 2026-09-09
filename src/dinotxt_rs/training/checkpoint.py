@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import numpy as np
 import torch
 
 from dinotxt_rs.models.official_dinotxt import trainable_state_dict
+from dinotxt_rs.training.provenance import compare_run_identities
 
 
 def save_checkpoint(
@@ -74,17 +76,6 @@ def capture_rng_state() -> dict[str, Any]:
     }
 
 
-def _identity_mismatches(expected: dict[str, Any], observed: dict[str, Any]) -> list[str]:
-    mismatches = [
-        name
-        for name in ("format_version", "config_sha256", "project_commit", "dinov3_commit")
-        if observed.get(name) != expected.get(name)
-    ]
-    if observed.get("files") != expected.get("files"):
-        mismatches.append("files")
-    return mismatches
-
-
 def _restore_trainable_model(model: Any, state: Any) -> None:
     if not isinstance(state, dict):
         raise ValueError("Checkpoint trainable_model is invalid")
@@ -127,7 +118,7 @@ def load_checkpoint(
     loader_generator: torch.Generator,
     device: torch.device,
     expected_identity: dict[str, Any],
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, dict[str, Any], dict[str, Any]]:
     if not path.is_file():
         raise FileNotFoundError(f"Resume checkpoint does not exist: {path}")
     payload = torch.load(path, map_location="cpu", weights_only=False)
@@ -136,10 +127,27 @@ def load_checkpoint(
     observed_identity = payload.get("run_identity")
     if not isinstance(observed_identity, dict):
         raise ValueError("Resume checkpoint has no run identity")
-    mismatches = _identity_mismatches(expected_identity, observed_identity)
-    if mismatches:
+    blocking, advisory = compare_run_identities(expected_identity, observed_identity)
+    if blocking:
         raise ValueError(
-            "Refusing to resume because checkpoint identity differs: " + ", ".join(mismatches)
+            "Refusing to resume because checkpoint identity differs: " + ", ".join(blocking)
+        )
+    identity_check = {
+        "status": "warning" if advisory else "match",
+        "blocking_mismatches": blocking,
+        "advisory_mismatches": advisory,
+        "checkpoint_project_commit": observed_identity.get("project_commit"),
+        "current_project_commit": expected_identity.get("project_commit"),
+    }
+    if advisory:
+        warnings.warn(
+            "Project commit changed across checkpoint resume: "
+            f"checkpoint={observed_identity.get('project_commit')!r}, "
+            f"current={expected_identity.get('project_commit')!r}. Continuing because the "
+            "exact config, input files, upstream DINOv3 commit, and checkpoint structure match; "
+            "the transition is recorded in resume_history.jsonl.",
+            RuntimeWarning,
+            stacklevel=2,
         )
     if payload.get("config_toml") is None:
         raise ValueError("Resume checkpoint is missing its config snapshot")
@@ -160,4 +168,4 @@ def load_checkpoint(
     run_state = payload.get("run_state")
     if not isinstance(run_state, dict):
         raise ValueError("Checkpoint run state is invalid")
-    return step, run_state
+    return step, run_state, identity_check

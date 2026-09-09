@@ -5,6 +5,7 @@ import math
 import os
 import platform
 import time
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,13 @@ from dinotxt_rs.models import (
     configure_trainable_parameters,
     load_official_dinotxt,
 )
-from dinotxt_rs.training.provenance import run_identity, sha256_file, sha256_text
+from dinotxt_rs.training.provenance import (
+    compare_run_identities,
+    git_commit,
+    run_identity,
+    sha256_file,
+    sha256_text,
+)
 
 
 def _autocast(device: torch.device, precision: str):
@@ -39,19 +46,29 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return value
 
 
-def _checkpoint_identity_mismatches(
-    expected_identity: dict[str, Any], observed_identity: Any
-) -> list[str]:
+def _checkpoint_identity_check(
+    expected_identity: dict[str, Any], observed_identity: Any, current_project_commit: str | None
+) -> tuple[list[str], dict[str, Any]]:
     if not isinstance(observed_identity, dict):
-        return ["run_identity"]
-    mismatches = [
-        name
-        for name in ("format_version", "config_sha256", "project_commit", "dinov3_commit")
-        if observed_identity.get(name) != expected_identity.get(name)
-    ]
-    if observed_identity.get("files") != expected_identity.get("files"):
-        mismatches.append("files")
-    return mismatches
+        return ["run_identity"], {}
+    blocking, advisory = compare_run_identities(expected_identity, observed_identity)
+    checkpoint_commit = observed_identity.get("project_commit")
+    provenance_commit = expected_identity.get("project_commit")
+    known_commits = {
+        commit
+        for commit in (checkpoint_commit, provenance_commit, current_project_commit)
+        if commit is not None
+    }
+    if len(known_commits) > 1 and "project_commit" not in advisory:
+        advisory.append("project_commit")
+    return blocking, {
+        "status": "warning" if advisory else "match",
+        "blocking_mismatches": blocking,
+        "advisory_mismatches": advisory,
+        "checkpoint_project_commit": checkpoint_commit,
+        "provenance_project_commit": provenance_commit,
+        "current_project_commit": current_project_commit,
+    }
 
 
 def _load_evaluation_checkpoint(
@@ -92,10 +109,25 @@ def _load_evaluation_checkpoint(
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict) or payload.get("format_version") != 2:
         raise ValueError("Evaluation requires a format_version=2 training checkpoint")
-    mismatches = _checkpoint_identity_mismatches(expected_identity, payload.get("run_identity"))
-    if mismatches:
+    blocking, identity_check = _checkpoint_identity_check(
+        expected_identity,
+        payload.get("run_identity"),
+        git_commit(config.source.parent),
+    )
+    if blocking:
         raise ValueError(
-            "Refusing evaluation because checkpoint identity differs: " + ", ".join(mismatches)
+            "Refusing evaluation because checkpoint identity differs: " + ", ".join(blocking)
+        )
+    if identity_check.get("advisory_mismatches"):
+        warnings.warn(
+            "Project commit differs across checkpoint evaluation: "
+            f"checkpoint={identity_check.get('checkpoint_project_commit')!r}, "
+            f"provenance={identity_check.get('provenance_project_commit')!r}, "
+            f"current={identity_check.get('current_project_commit')!r}. Continuing because "
+            "the exact config, input files, upstream DINOv3 commit, and checkpoint structure "
+            "match.",
+            RuntimeWarning,
+            stacklevel=2,
         )
     if payload.get("config_toml") != config_text:
         raise ValueError("Checkpoint config snapshot does not exactly match evaluation config")
@@ -115,6 +147,7 @@ def _load_evaluation_checkpoint(
         "sha256": sha256_file(checkpoint),
         "step": payload.get("step"),
         "run_identity": payload.get("run_identity"),
+        "identity_check": identity_check,
         "training_output": str(training_output),
     }
 

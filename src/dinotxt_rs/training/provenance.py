@@ -63,11 +63,12 @@ def build_provenance(config: Config) -> dict[str, Any]:
 
 
 def run_identity(config_text: str, provenance: dict[str, Any]) -> dict[str, Any]:
-    """Fields that must be identical before a checkpoint can be resumed.
+    """Fields compared before checkpoint resume or evaluation.
 
     Paths are deliberately excluded: moving a fully verified project tree must
     not invalidate a run, whereas any input content or source revision change
-    must.
+    must. ``project_commit`` is retained for audit but handled as advisory by
+    :func:`compare_run_identities`; the other fields are blocking.
     """
     files = provenance.get("files")
     if not isinstance(files, dict):
@@ -86,6 +87,30 @@ def run_identity(config_text: str, provenance: dict[str, Any]) -> dict[str, Any]
         "dinov3_commit": provenance.get("dinov3_commit"),
         "files": file_hashes,
     }
+
+
+def compare_run_identities(
+    expected: dict[str, Any], observed: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Split identity differences into blocking and provenance-only fields.
+
+    The project commit remains recorded, but changing it does not by itself
+    prove that an experiment's effective protocol changed. Exact config and
+    input identities, plus the upstream DINOv3 commit, remain blocking.
+    """
+    blocking = [
+        name
+        for name in ("format_version", "config_sha256", "dinov3_commit")
+        if observed.get(name) != expected.get(name)
+    ]
+    if observed.get("files") != expected.get("files"):
+        blocking.append("files")
+    advisory = (
+        ["project_commit"]
+        if observed.get("project_commit") != expected.get("project_commit")
+        else []
+    )
+    return blocking, advisory
 
 
 def write_provenance(config: Config, payload: dict[str, Any] | None = None) -> Path:
