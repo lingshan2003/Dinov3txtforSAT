@@ -1,794 +1,487 @@
-# 最新交接：SkyScript Gate S1 通过与 500-step Gate S2
+# 最新交接：冻结稳定基线并进入 M4 视觉域对照
 
-更新时间：2026-09-08
+更新时间：2026-09-09
 
-当前状态：项目已经完成基础工程闭环，也完成了对旧 ChatEarthNet 路线的失败诊断。当前主线已切换为
-**SkyScript unique-caption 数据 + 冻结官方 dino.txt + 小型 image embedding adapter**。首个 Web
-100-step 实验已通过 Gate S0；随后 seed 11/23/47 全部通过 Gate S1，4,055 条 held-out SkyScript
-validation 的 loss 和全局 retrieval 跨 seed 稳定改善，RSICD-val mean recall 得到保持。当前进入
-Gate S2：从官方初始化开始新的 500-step 稳定性 pilot，并在 step 100/250/500 分段设门槛。
+## 1. 一页结论
 
-这份文档从当前状态重新编写。ChatEarthNet、历史 500-step pilot 和后续 A/B/C 诊断只作为历史背景
-总结；它们不再代表当前数据协议、当前模型更新范围或下一轮训练入口。
+项目当前已经得到一个可信的稳定基线：
 
-本文是当前进度和操作协议的唯一主文档。研究动机见[科研背景](../DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md)，稳定开发规则见[开发架构](DEVELOPMENT_ARCHITECTURE.md)。
+> SkyScript images2+images3 unique-caption 数据、`title_raw` 文本、冻结官方 dino.txt、仅训练
+> 2048→256→2048 image embedding residual adapter，在 Web DINOv3 ViT-L/16 上能够跨
+> seed 稳定改善同源全局图文检索，并在 500-step 日程中持续改善而不发生历史路线的长训练反转。
 
-## 1. 已完成、当前状态与证据来源
+Gate S0、S1、S2 已全部通过。下一步直接进入 **M4 / RQ1：Web 与 SAT 视觉初始化的严格对照**。
 
-| 范围 | 已有工作 | 当前接手点 |
-| --- | --- | --- |
-| 基础工程 | 模型加载、训练、validation/best、严格 resume、下游评测和审计工具 | adapter parity 与一一配对 retrieval 已完成服务器实测 |
-| 历史路线 | ChatEarthNet pilot、外部退化与 A/B/C、A/C 诊断 | 已停止作为当前主训练协议，保留失败分析与原始产物 |
-| 当前数据 | SkyScript images2+images3 唯一 caption 选择、抽取、36,495/4,055 拆分和 manifest | global77 train/validation 精确文件和解码像素 overlap 均为 0 |
-| 当前方法 | adapter-only 100-step seeds 11/23/47 | 三个 seed 的 SkyScript retrieval 均提升且 RSICD-val 平均保持，Gate S1 已通过 |
-| 下一步 | Gate S2 | 新 500-step seed11 配置、分段执行脚本和汇总工具已准备，待提交后在服务器运行 |
+本轮同时冻结以下研究决策：
 
-**本次文档核验范围**：seed11 训练方法 commit 为
-`4c564d25f3946531055e26dea6890fb892fed2fc`；Gate S0 代码进入 `9202423`；seed23/47 训练与 Gate
-S1 编排 commit 为 `bda81a2d27c0ded8529937c80d02ecbfccdcb6ae`。本次读取了用户从服务器下载的
-`outputs/skyscript_gate_s1/summary.json` 副本，报告状态为 `pass`，三个 seed 的全部预设门槛均为
-true。本次未直接登录服务器读取各子报告；服务器上的 `preflight.txt`、parity、overlap、逐
-checkpoint retrieval 报告和训练原始产物仍是完整证据来源，下载的 summary 是本次结果复核依据。
+1. 当前正式训练数据使用完整的 36,495 条 train，不再为了沿用旧的“10k / 50k”命名而人为切出
+   10k 主实验。
+2. 当前不单列紧接着必须完成的 scale 阶段。规模研究推迟到扩展更多分片、恢复多图同语义关系，
+   或建立 multi-positive/false-negative 处理后再做。
+3. 原计划中的统一文本模板实验不再是进入 M4 的前置 Gate；它保留为 RQ2 可选实验。
+4. unique-caption 不只服务 negative queue。它已经减少当前 in-batch InfoNCE 的精确同文假负例，
+   同时让未来 queue 更安全；但它并没有自动解决同义文本、近重复地点和 queue embedding 过时。
+5. queue 与“扩大可训练参数范围”是两个独立实验轴，不能在同一个 run 中同时打开。
+6. 其他官方模块的微调按 image side → text projection → text blocks 的顺序逐步增加，并先实现分组
+   learning rate；不能把当前 adapter 的 `1e-4` 直接施加到全部预训练模块。
 
-“当前工作”指 Gate S2 代码准备，不表示服务器此刻正在训练。阅读顺序：第 4–6 节了解候选与 S0
-证据，第 8.2 节了解 S1 复现结果，第 8.3 节执行 S2；需要重建环境或数据时再看第 12 节。
+研究背景见[科研背景](../DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md)，稳定工程规则见
+[开发架构](DEVELOPMENT_ARCHITECTURE.md)。本文是当前状态、具体协议和下一步操作的唯一主文档。
 
-## 2. 里程碑与当前定位
+## 2. 已完成证据
 
-架构文档定义抽象阶段；以下是本项目当前沿用的具体科研协议，样本规模统一在本节维护：
+### 2.1 Gate S0：单 seed 候选成立
 
-1. `M0 assets`；
-2. `M1 inference`；
-3. `M2 data`；
-4. `M3 MVP`：Web 10k 训练稳定、retrieval 指标可计算；
-5. `M4 RQ1`：SAT 10k 严格对照；
-6. `M5 scale`：50k/full；
-7. `M6 RQ2`：自然、结构化、层级文本；
-8. `M7 RQ3`：local alignment。
+seed11 的 100-step adapter-only 实验通过：
 
-当前 SkyScript 实验使用 36,495 条训练数据，是一次方法候选验证，不符合 `M4 RQ1 = SAT 10k
-严格对照` 的定义，也不能因为样本量接近 50k 就称为 M5。只有先完成泄漏、保持性、跨 seed 和更长
-日程验证，才能冻结一个正式 Web/SAT 对照协议。
+- 训练与 validation 精确文件 hash overlap=0；
+- 解码 RGB 像素 hash overlap=0；
+- adapter step0 与无 adapter 官方输出 parity 通过；
+- SkyScript held-out 全局 retrieval 改善；
+- RSICD-val mean recall 满足绝对退化不超过 0.01 的保持门槛；
+- checkpoint、validation、best、provenance 和 queue_size=0 均核验通过。
 
-历史产物中带有 `m4`、`m5` 的目录名是早期误命名的实验身份。目录和 checkpoint 不应重命名；
-在文字中一律称为“历史 A/B/C 诊断”和“历史 A/C 续跑诊断”。
+### 2.2 Gate S1：跨 seed 复现通过
 
-## 3. 当前代码与运行环境
-
-### 3.1 路径与版本
-
-- GitHub 仓库：`lingshan2003/Dinov3txtforSAT`（私有）；
-- AutoDL 项目：`/root/autodl-tmp/Dinov3txtforSAT`；
-- 本地项目：`/Users/wangyue/Documents/ChatGPT/Dinov3txtforSAT`；
-- 服务器虚拟环境：`/root/autodl-tmp/Dinov3txtforSAT/.venv`；
-- 当前 SkyScript seed11 训练 commit：`4c564d25f3946531055e26dea6890fb892fed2fc`；
-- seed23/47 训练与 S1 编排 commit：`bda81a2d27c0ded8529937c80d02ecbfccdcb6ae`；
-- DINOv3 固定 commit：`6876159a11b4df116f30f667f8c9888617df0751`；
-- 已验证服务器环境：Python 3.12.3、PyTorch `2.7.1+cu128`、CUDA 12.8、RTX 4090、BF16。
-
-上述实验代码 commit（不是本次文档修订版本）引入了：
-
-- SkyScript 定向 ZIP 抽取、unique-caption 选择和确定性拆分；
-- SkyScript manifest 与 77-token 文本审计；
-- 2048→256→2048 的图像 embedding adapter；
-- `configs/skyscript_web_adapter_10step.toml`；
-- `configs/skyscript_web_adapter_100step.toml`。
-
-### 3.2 模型资产
-
-| 文件 | SHA-256 |
-| --- | --- |
-| `dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth` | `8aa4cbddda325040fc78db2c272754af6ebe8ff2c55f6ec4f1964d8890f66035` |
-| `dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth` | `eadcf0ffc02418b6c22a885ea1a7aaeeef84fbf0f5bb4d0b7d1d36e68a964f48` |
-| `dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth` | `a442d8f52a3a7ad715bf6b7d8117fb3a84d54249389b0a13f6956cd0d2eca4f0` |
-| `bpe_simple_vocab_16e6.txt.gz` | `924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a` |
-
-`bpe_simple_vocab_16e6.txt.gz` 必须保持 gzip 压缩状态。
-
-## 4. 当前数据协议：SkyScript
-
-### 4.1 为什么更换训练数据
-
-旧 ChatEarthNet caption 较长、噪声和任务不匹配风险较高，第一句清洗还可能保留泛化描述而丢掉
-后部主体语义。SkyScript polished top30 的 caption 更短、更接近可见地物或设施，并且提供了便于
-去模板化的 `title_raw`。
-
-更换数据后得到更好的曲线是重要证据，但不是单因素因果实验。当前方案同时改变了数据源、caption
-分布、重复处理、可训练模块、queue 和增强，因此不能把改善全部归因于“数据质量”。
-
-### 4.2 完整 CSV 的只读统计
-
-`SkyScript_train_top30pct_filtered_by_CLIP_laion_RS_language_polished.csv`：
-
-- 1,518,888 条记录，filepath 全部唯一；
-- `title_raw` 有 52,923 个规范化后唯一文本；
-- 约 96.52% 的记录与其他记录共享相同的精确语义文本；
-- `title_raw` 空格分词长度 p50=4、p95=10、max=62；
-- `title` 中 `It shows:` 后的正文规范化后 100% 等于 `title_raw`；
-- `title` 的主要额外信息是视角模板：1,496,105 条使用 `An aerial image`，22,783 条使用
-  `A satellite image`。
-
-因此当前首轮使用 `title_raw`。带模板的 `title` 保留为未来 matched-image 文本消融，不与当前
-基线混用。
-
-### 4.3 images2+images3 快速路径
-
-两个分片共有 370,317 条候选记录。以规范化 `title_raw` 为组、seed 11 确定性选择每组一张图，
-得到 40,550 个唯一 caption-image pair：
-
-| 分片 | 代表图片数 |
-| --- | ---: |
-| images2 | 20,391 |
-| images3 | 20,159 |
-| 合计 | 40,550 |
-
-随后以 seed 23 对唯一 caption 做确定性 90/10 拆分：
-
-| split | 样本数 | 规范化 caption 重叠 |
-| --- | ---: | ---: |
-| train | 36,495 | 0 |
-| validation | 4,055 | 0 |
-
-本地抽取时 40,550 张图片全部通过 ZIP CRC 和图片解码检查。上传到服务器的压缩包及拆分 CSV 身份为：
-
-| 文件 | SHA-256 |
-| --- | --- |
-| `skyscript_images23_unique40550.zip` | `39368eb926edd3dd5e1b14a975b21c729d826b8c6081749dfe8b00433bf3ab3b` |
-| `images23_unique36495_train.csv` | `7effc995620643a647b49a21f556b0baf7a799a500be234d918c6fd29dc512d2` |
-| `images23_unique4055_val.csv` | `f2c27035cba000afce8620ed2ee419a224319c97d9e1ef176f0d4923cbd2bafe` |
-
-服务器数据根目录：
+主报告：
 
 ```text
-assets/data/raw/skyscript/images23_unique40550/
-├── images2/
-├── images3/
-└── _metadata/selection.csv
+outputs/skyscript_gate_s1/summary.json
 ```
 
-### 4.4 当前训练 manifest
+seed11/23/47 的所有预设门槛均通过：
 
-服务器重新生成 manifest，使 `image` 字段指向服务器绝对路径。当前 100-step run 的 provenance
-记录为：
-
-| split | manifest | 样本数 | SHA-256 |
-| --- | --- | ---: | --- |
-| train | `skyscript_images23_train_raw_unique36495_seed11_global77.jsonl` | 36,495 | `4264d884d564631816baf3e339e7ca12be2958966d99a60f6a75ae3d5d4dbaec` |
-| validation | `skyscript_images23_val_raw_unique4055_seed23_global77.jsonl` | 4,055 | `062238716b8fddad890b4f97354588ad7524f1099667d3c0baa932002845b7f6` |
-
-文本使用真实 dino.txt tokenizer，以 `complete_word_backoff_without_sentence_selection` 保持尽可能完整
-的 `title_raw`，并确保不超过 77 tokens。这里没有复用 ChatEarthNet 的第一完整句清洗器。
-
-### 4.5 已完成审计与剩余数据风险
-
-- 服务器 global77 train/validation 已完成精确文件哈希和解码 RGB 像素哈希审计，两种 overlap
-  count 均为 0；
-- 精确哈希不能发现同一区域的不同裁剪、缩放或时间版本；
-- 当前 CSV filepath 不直接提供适合分组拆分的经纬度，地理泄漏仍是限制；
-- 每个精确 caption 只保留一张图会降低 false negative，但也改变了真实频率分布；
-- validation 来自相同 SkyScript 过滤与生成流程，不是跨数据源泛化测试。
-
-## 5. 当前方法：冻结官方模型，只训练 image adapter
-
-### 5.1 Adapter 结构
-
-当前 wrapper 在官方归一化 image embedding 后应用：
-
-```text
-image embedding (2048)
-  → LayerNorm
-  → Linear(2048, 256)
-  → GELU
-  → Linear(256, 2048), zero initialized
-  → residual add
-  → L2 normalize
-```
-
-可训练参数为 1,054,976。第二个 Linear 的权重和 bias 为零初始化，因此 step 0 的 image embedding
-在理论上与官方输出相同。
-
-冻结边界：
-
-- Web DINOv3 backbone：冻结并保持 eval；
-- dino.txt vision head：冻结并保持 eval；
-- text encoder、text projection：冻结并保持 eval；
-- logit scale：冻结，当前 validation 中始终为 100.0；
-- image adapter：唯一可训练模块；
-- patch tokens：不经过 adapter，因此当前实验只支持 global embedding alignment，不支持 local
-  alignment 结论。
-
-### 5.2 当前 100-step 配置
-
-配置：`configs/skyscript_web_adapter_100step.toml`
-
-| 项目 | 设置 |
-| --- | --- |
-| backbone | Web DINOv3 ViT-L/16 |
-| image adapter bottleneck | 256 |
-| trainable official layers | 无 |
-| physical batch | 16 |
-| gradient accumulation | 4 |
-| effective samples / optimizer step | 64 |
-| precision | BF16 |
-| optimizer | AdamW |
-| peak learning rate | `1e-4` |
-| weight decay | 0.01 |
-| max gradient norm | 1.0 |
-| total steps | 100 |
-| warmup | 10 steps |
-| scheduler | linear warmup + cosine decay |
-| random augmentation | 关闭 |
-| negative queue | 关闭 |
-| validation | step 0/25/50/75/100，全量 4,055 条 |
-| validation loss group | 16 |
-| validation forward batch | 64，仅用于加速前向 |
-
-关闭增强和 queue 是当前基线的一部分，不是最终方案。这样可以先验证数据和小型 adapter 本身，避免
-方向性 caption 被随机几何变换破坏，也避免同义 caption 或近重复地点被 queue 当作 false negative。
-
-## 6. 当前实验结果
-
-### 6.1 已完成 run
-
-```text
-outputs/skyscript_images23_top30raw_imageadapter256_36495_100step_seed11/
-```
-
-身份与完整性：
-
-- steps=100，target_steps=100，completed=true；
-- project commit=`4c564d25f3946531055e26dea6890fb892fed2fc`；
-- DINOv3 commit=`6876159a11b4df116f30f667f8c9888617df0751`；
-- 保存 step 0/25/50/75/100、`best.pt`、provenance、metrics、validation 和 summary；
-- 所有 loss 与梯度有限；
-- final queue size=0；
-- 峰值 CUDA allocated memory=4,198,526,464 bytes，约 3.91 GiB；
-- 本次 run 未发生 resume。
-
-### 6.2 Validation 曲线
-
-| step | validation loss | 相对 step 0 |
-| ---: | ---: | ---: |
-| 0 | 1.5994003 | 0.00% |
-| 25 | 1.1477629 | -28.24% |
-| 50 | 1.0803549 | -32.45% |
-| 75 | 0.9872210 | -38.27% |
-| 100 | **0.9726497** | **-39.19%** |
-
-五个点严格单调下降，best step=100。step 75→100 仍下降 1.48%，但改善幅度已经明显缩小，可能
-接近平台。
-
-训练 loss：
-
-- 第一个 10-step 窗口均值：1.5650553；
-- 最后一个 10-step 窗口均值：0.9447836；
-- 窗口均值下降 39.63%；
-- 单步最小值 0.7713198，最后一步 1.0586457。训练 batch 随机变化，所以不要求逐步单调。
-
-梯度范数前 10-step 均值为 29.9066，末 10-step 均值为 16.0512；记录值均有限，并在 optimizer
-更新前按配置裁剪到最大范数 1.0。
-
-### 6.3 对结果的解释
-
-validation loss 使用固定的 16-sample InfoNCE group。随机匹配的参考值约为
-`ln(16)=2.7726`。官方 step 0 已达到 1.5994，表明官方 dino.txt 对这些简洁 SkyScript 语义本来
-就具有明显的图文对应能力；小型 adapter 进一步将其降至 0.9726。
-
-这个结果强于固定 16 条 smoke：训练和 validation 的精确 caption 不重叠，下降发生在全部 4,055
-条 held-out 样本上，因此不是简单重复记忆一个训练 batch。当前证据支持：
-
-> SkyScript unique-caption + raw title + adapter-only 是值得继续核验的首个稳定候选。
-
-### 6.4 Gate S0 结果
-
-Gate S0 使用 `scripts/run_skyscript_gate_s0.sh` 在服务器完成，汇总报告为
-`outputs/skyscript_gate_s0_seed11/summary.json`。训练产物、train/validation overlap、step-0
-parity、train/RSICD-val overlap、SkyScript retrieval 改善和 RSICD-val 保持六项检查全部通过。
-
-SkyScript 4,055 对一一配对全局 retrieval：
-
-| step | mean recall | image→text median rank | text→image median rank |
-| ---: | ---: | ---: | ---: |
-| 0 | 0.0862721 | 181 | 118 |
-| 25 | 0.1065351 | 94 | 83 |
-| 50 | 0.1079326 | 89 | 75 |
-| 75 | 0.1137279 | 72 | 68 |
-| 100 | **0.1138512** | **70** | **67** |
-
-step 100 相对 step 0 的 mean recall 绝对提升 0.0275791，即 2.76 个百分点、相对约 32%；双向
-R@1/R@5/R@10 六项都高于 step 0。step 75→100 仅增加 0.0001233，说明当前日程末段已经接近
-平台，但不能据此预测新的 500-step 日程。
-
-RSICD-val 开发保持集：
-
-| checkpoint | mean recall | 相对官方初始化 |
-| --- | ---: | ---: |
-| official / step 0 | 0.1587751 | 0.0000000 |
-| step 25 | 0.1629494 | +0.0041743 |
-| step 50 | 0.1603900 | +0.0016149 |
-| step 75 | 0.1632541 | +0.0044790 |
-| step 100 | **0.1609689** | **+0.0021938** |
-
-step 100 没有发生 mean recall 遗忘，并比官方初始化高 0.22 个百分点。但方向并不一致：
-image→text 的 R@1/R@5/R@10 均提高，text→image 的三项 recall 均低于官方初始化。因此当前证据
-支持“外部平均检索能力得到保持”，不支持“RSICD 双向能力全面提升”。
-
-Gate S0 后的结论升级为：
-
-> seed 11 上，SkyScript unique-caption + raw title + adapter-only 不仅降低同源 validation loss，
-> 也提高了全局 retrieval，并在预先规定的 RSICD-val mean recall 门槛下保持外部能力；该候选可以
-> 进入跨 seed 复现。
-
-### 6.5 当前不能得出的结论
-
-- 不能把当前 loss 与历史 ChatEarthNet loss 直接比较；数据、caption、更新范围、queue、增强和
-  scheduler 均不同；
-- 不能断言改善完全来自 SkyScript 数据质量；当前不是正交消融；
-- 不能把 RSICD-val mean recall 保持写成外部双向能力全面提升或跨数据源泛化已经成立；
-- 跨 seed 稳定结论只覆盖 S1 预先指定的 seed11/23/47 和当前 100-step 协议，不能外推到长日程；
-- 不能断言 100 step 后继续训练仍会改善；历史项目曾在更长训练中发生反转；
-- 不能断言 Web backbone 优于 SAT；尚未做当前协议下的严格对照；
-- 不能宣称 local alignment 改善，因为 adapter 不作用于 patch tokens。
-
-## 7. 历史路线总结：ChatEarthNet（非当前协议）
-
-### 7.1 历史工作完成了什么
-
-旧路线建立了项目仍在使用的工程基础：
-
-- 官方 Web/SAT DINOv3 与 dino.txt 加载；
-- 对称 InfoNCE、queue、冻结策略和不同更新范围；
-- 确定性 validation、固定 batch monitor、step-0 best 候选；
-- checkpoint provenance、严格 resume、sampler/RNG/optimizer/scheduler 状态；
-- EuroSAT 零样本分类、RSICD retrieval、step-0 parity；
-- train/evaluation manifest 的文件和解码像素重叠审计。
-
-因此旧路线不是“毫无价值的失败”。它证明了工程路径，并揭示了只看同域 loss 会误判模型质量。
-
-### 7.2 历史数据与主要结果
-
-ChatEarthNet 历史训练协议使用 10,000 条候选、移除占位图后实际 9,969 条训练样本，并使用较长
-caption 的第一完整句与 word backoff。该数据和文本协议现已停止作为当前主训练集。
-
-历史 Web/SAT 500-step pilot 在 ChatEarthNet validation 上都下降约 27.6%，但外部结果没有同步
-改善：
-
-| 历史同一 backbone 比较 | EuroSAT Top-1 | RSICD test mean recall |
-| --- | ---: | ---: |
-| Web 官方初始化 | 50.81% | 23.14% |
-| Web 历史 best | 9.26% | 11.04% |
-| SAT 官方初始化 | 7.09% | 0.46% |
-| SAT 历史 best | 11.11% | 0.35% |
-
-Web 历史 checkpoint 在 EuroSAT 上几乎坍缩为单一类别；SAT 的 11.11% 对应主要输出一个类别，
-不能解释为有效提升。
-
-随后历史 A/B/C 诊断比较了大范围更新与 vision-head-only、`5e-5` 与 `5e-6`。较低 LR 和冻结
-文本塔只能延迟或减轻遗忘：A、C 在 step 100 短期改善，继续到 step 250 后 ChatEarthNet
-validation 均高于初始化。C 的 RSICD-val 保持较好，但同域目标仍恶化；没有候选同时通过双门槛。
-
-### 7.3 从历史路线保留的结论
-
-1. 工程正确、loss 有限、checkpoint 可恢复，不代表训练方法正确。
-2. 同域 validation 改善可能伴随严重外部遗忘。
-3. 单 seed、100-step 的局部排名不能预测更长训练。
-4. 冻结文本塔能减轻遗忘，但仅冻结文本塔不是充分条件。
-5. 不能用已观察过的 RSICD test 或全量 EuroSAT 继续调参。
-6. queue、augmentation、更新范围和数据质量必须分别消融，不能同时加入。
-
-### 7.4 历史产物
-
-以下目录仅用于追溯和复现，不作为当前训练续跑起点：
-
-```text
-outputs/gate_a_step0_parity/
-outputs/m3_web_global77_formalschedule_500step_pilot_seed11/
-outputs/m3_sat_global77_formalschedule_500step_pilot_fastval_seed11/
-outputs/m3_downstream_500step_pilot_seed11/
-outputs/m4_web_abc_100step_development_seed11/
-outputs/m4_web_a_fullscope_lr5e6_100step_seed11/
-outputs/m4_web_b_visionhead_lr5e5_100step_seed11/
-outputs/m4_web_c_visionhead_lr5e6_100step_seed11/
-outputs/m5_web_ac_250step_development_seed11/
-```
-
-不得重命名这些目录、修改历史 config/metrics/provenance，或从历史 checkpoint 接续当前 SkyScript
-训练。
-
-## 8. 下一步计划
-
-### 8.1 Gate S0：已完成并通过
-
-S0 的完整结果和解释见第 6.4 节。服务器证据至少包括：
-
-```text
-outputs/skyscript_images23_top30raw_imageadapter256_36495_100step_seed11/verification_report.json
-outputs/skyscript_images23_top30raw_imageadapter256_36495_100step_seed11/skyscript_step0_parity.json
-outputs/skyscript_s0_train_val_overlap.json
-outputs/skyscript_gate_s0_seed11/preflight.txt
-outputs/skyscript_gate_s0_seed11/train_vs_rsicd_val_overlap.json
-outputs/skyscript_gate_s0_seed11/skyscript_val_step{000,025,050,075,100}.json
-outputs/skyscript_gate_s0_seed11/rsicd_val_official.json
-outputs/skyscript_gate_s0_seed11/rsicd_val_step{000,025,050,075,100}.json
-outputs/skyscript_gate_s0_seed11/summary.json
-```
-
-这些报告与当前 100-step 训练目录都必须保留。S0 已结束，不需要重复运行来寻找更好的 checkpoint，
-也不能在同一 RSICD-val 上继续调节门槛。
-
-### 8.2 Gate S1：已完成并通过
-
-S0 通过后，只改变 seed 和输出目录，以 seed 23、47 从官方初始化重复完全相同的 100-step 协议。
-数据、caption、adapter 256、LR、warmup、queue 和 augmentation 都不改变。
-
-每个 seed 都必须满足：
-
-- step 100 validation 低于其自身 step 0，且 best 不退回 step 0；
-- SkyScript retrieval 相对 step 0 改善；
-- RSICD-val 保持性通过；
-- 所有 loss、梯度、checkpoint 和 provenance 核验通过。
-
-最终报告已经包含三个 seed 的均值、sample standard deviation（ddof=1）和逐 seed 曲线，没有只
-汇报最好的一次。主报告为 `outputs/skyscript_gate_s1/summary.json`，状态为 `pass`。
-
-| seed | step 100 validation loss | SkyScript mean recall | 相对 step 0 | RSICD mean recall 相对官方 |
+| seed | step100 validation loss | SkyScript mean recall | 相对 step0 | RSICD 相对官方 |
 | ---: | ---: | ---: | ---: | ---: |
 | 11 | 0.9726497 | 0.1138512 | +0.0275791 | +0.0021938 |
 | 23 | 0.9662531 | 0.1161118 | +0.0298397 | +0.0012492 |
 | 47 | 0.9638958 | 0.1169338 | +0.0306617 | +0.0068251 |
 
-三 seed 平均 step100 validation loss 为 0.9675995±0.0045296；SkyScript mean recall 为
-0.1156323±0.0015963，相对共同 step0 平均绝对提升 0.0293602，相对约 34%。RSICD mean recall
-相对官方平均提升 0.0034227±0.0029842，三个 seed 均未发生 mean recall 退化。
+三 seed 汇总：
 
-RSICD 的方向性权衡也跨 seed 重现：image→text 指标改善，而 text→image 的 recall 和 rank 均变差。
-因此 S1 支持“跨 seed 稳定改善同源全局 retrieval，并保持外部平均能力”，仍不支持“外部双向能力
-全面提升”。该方向性现象在 S2 继续原样报告，不根据已观察结果事后修改 mean-recall 主门槛。
+- step100 validation loss：`0.9675995 ± 0.0045296`；
+- SkyScript mean recall：`0.1156323 ± 0.0015963`；
+- SkyScript 相对共同 step0 的绝对增量：`0.0293602 ± 0.0015963`，相对约 34%；
+- RSICD-val 相对官方的 mean recall 增量：`0.0034227 ± 0.0029842`。
 
-S1 代码与证据入口：
+这里的离散度是 sample standard deviation，ddof=1。跨 seed 稳定结论只覆盖这三个预先指定 seed、
+当前数据和 100-step 协议。
 
-- `configs/skyscript_web_adapter_100step_seed23.toml` 和
-  `configs/skyscript_web_adapter_100step_seed47.toml` 只改变实验名称、seed 和输出目录；manifest
-  文件名中的 seed 11/23 仍表示数据选择与拆分身份；
-- `scripts/run_skyscript_gate_s1.sh` 负责协议身份检查、seed 23/47 训练、逐 seed 完整 S0 等价门槛
-  和最终三 seed 汇总；脚本可选择 `--seed 23`、`--seed 47` 或默认 `all`；
-- `tools/summarize_skyscript_gate_s1.py` 核验三个 run 的实际 `config.toml`，只允许上述三个实验身份
-  字段不同，并输出逐 seed 曲线以及 mean/sample standard deviation（ddof=1）；
-- seed 23/47 逐 seed 报告分别在 `outputs/skyscript_gate_s1_seed23/` 和
-  `outputs/skyscript_gate_s1_seed47/`；
-- 训练 provenance 中 seed11 的项目 commit 为 `4c564d25f3946531055e26dea6890fb892fed2fc`，
-  seed23/47 为 `bda81a2d27c0ded8529937c80d02ecbfccdcb6ae`。这两个 commit 之间没有改变训练器、adapter
-  或模型训练实现，差异包含 S0/S1 评测、配置、编排和文档；正式报告仍保留这一 provenance 差异。
+### 2.3 Gate S2：500-step 稳定性通过
 
-### 8.3 Gate S2：500-step 稳定性 pilot（代码已准备）
-
-S1 通过后创建一个新的、不可变的 500-step 配置。保持当前数据、`title_raw`、adapter、无增强和
-无 queue。建议使用相同 peak LR `1e-4`、50-step warmup 和 cosine decay。
-
-当前 100-step checkpoint **不能直接续跑**：当前 scheduler 的设计总长就是 100；把总长改成 500
-会改变完整 LR 轨迹，也会违反严格 config identity。新 500-step run 必须从官方初始化开始。
-
-500-step run 分段执行：
-
-1. 0→100；
-2. 100→250，严格 resume；
-3. 250→500，严格 resume。
-
-在 step 0/100/250/500 运行 SkyScript 全局 retrieval 和 RSICD-val；SkyScript loss 至少每 25 或
-50 step 验证。进入下一段前要求当前 validation 低于 step 0、外部保持通过、best 与 resume 身份
-完整。任一门槛失败立即停止，不以“继续训练可能恢复”为理由越过。
-
-当前已经准备：
-
-- 不可变配置 `configs/skyscript_web_adapter_500step_seed11.toml`：与 100-step seed11 相比，只改变
-  实验名称/输出目录、`max_steps=500`、`warmup_steps=50`、`validation_every=50` 和
-  `checkpoint_every=50`；seed、数据、模型、adapter、batch、LR、无增强及无 queue 均不变；
-- `scripts/run_skyscript_gate_s2.sh`：强制从官方初始化开始，依次在 100、250、500 停止；每段先
-  核验产物和 resume 历史，再运行 parity、overlap、SkyScript retrieval、RSICD-val 并生成不可变
-  stage summary；任何 stage 不通过都不会进入下一段；
-- `tools/summarize_skyscript_gate_s2.py`：交叉核验 manifest、checkpoint step、validation、parity、
-  overlap、retrieval 和 resume 边界，生成逐阶段与最终汇总；
-- `tools/verify_training_run.py` 新增 `--forbid-resume`，用于证明第一段确实从官方初始化开始；后两段
-  分别要求 resume history 包含 step100 和 step100/250。
-
-提交并推送后，在服务器项目根目录执行：
-
-```bash
-git pull --ff-only
-tmux new-session -s skyscript-s2 'bash scripts/run_skyscript_gate_s2.sh; exec bash'
-```
-
-脚本不能 `source`。默认连续执行三个阶段，但只会在当前阶段通过后继续。也可使用
-`--stop-after-stage 100` 或 `--stop-after-stage 250` 主动分次运行；之后用更大的 stage 值重新运行，
-脚本会核验并复用已有结果。最终主报告为 `outputs/skyscript_gate_s2_seed11/summary.json`，训练目录为
-`outputs/skyscript_images23_top30raw_imageadapter256_36495_500step_seed11/`。
-
-### 8.4 Gate S3：单因素消融
-
-S2 通过后按顺序执行：
-
-1. 在完全相同图片和 split 上比较 `title_raw` 与统一模板
-   `An aerial image. It shows: ...`；
-2. 比较 adapter 容量或 residual/embedding anchoring；
-3. 单独测试随机裁剪，并先审查方向性与局部结构 caption；
-4. 只有建立 multi-positive 或等价 false-negative 处理后，才考虑恢复 negative queue；
-5. 不在同一个实验里同时解冻官方层、改变 caption、加入增强和 queue。
-
-### 8.5 正式 M4 与 M5
-
-S0–S2 通过后，按现有架构定义，从 SkyScript train 固定一个确定性 10k 子集，使用同一数据、文本、
-adapter、优化和评测协议运行 Web/SAT 严格对照，才进入正式 M4。
-
-如果决定把 M4 改为 36,495 条，必须先修订本文件第 2 节的具体协议并记录变更理由，不能静默
-改变里程碑定义。架构仅维护抽象阶段目的。
-
-M4 得到可复现且保持外部能力的结果后，再进入 M5，比较：
-
-- 固定 SkyScript 10k；
-- 当前 images2+images3 的 36,495 train；
-- 扩展分片覆盖后的更大 unique-caption 训练子集：完整 polished CSV 统计上限为 52,923 个
-  唯一文本，不代表扣除固定 validation、完成图像与地理审计后仍有同等训练数量；
-- 更大重复样本规模只能在 multi-positive/false-negative 问题解决后考虑。
-
-## 9. 当前冻结边界
-
-- 不直接续跑当前 SkyScript step-100 checkpoint；
-- 不把当前结果称为 M4、M5 或 RSICD 双向能力全面提升；跨 seed 稳定仅限 S1 的三个既定 seed；
-- 不用 RSICD test 或全量 EuroSAT 循环调参；
-- 不在 S2 三个阶段全部通过前进入 S3、正式 M4 或其他更大实验；
-- 不恢复 4,096 negative queue；
-- 不加入随机增强；
-- 不解冻官方 backbone、vision head 或文本塔；
-- 不删除原始 SkyScript CSV、images2/images3 大 ZIP 或旧数据集；它们仍用于复核和未来消融；
-- 不因 `best.pt` 存在而删除 step 0、中间 step、final step 或 provenance。
-
-## 10. 当前产物与保留要求
-
-当前 SkyScript 输出必须保留：
+训练目录：
 
 ```text
-outputs/skyscript_images23_top30raw_imageadapter256_fixed16_10step_seed11/
-outputs/skyscript_images23_top30raw_imageadapter256_36495_100step_seed11/
-outputs/skyscript_gate_s0_seed11/
-outputs/skyscript_s0_train_val_overlap.json
+outputs/skyscript_images23_top30raw_imageadapter256_36495_500step_seed11/
 ```
 
-100-step run 至少保留：
+主报告：
 
 ```text
-config.toml
-provenance.json
-metrics.jsonl
-validation.jsonl
-step_0000000.pt
-step_0000025.pt
-step_0000050.pt
-step_0000075.pt
-step_0000100.pt
-best.pt
-training_summary.json
-smoke.log
-train.log
-verification_report.json
-skyscript_step0_parity.json
+outputs/skyscript_gate_s2_seed11/summary.json
 ```
 
-`best.pt` 只是 step 100 的副本或链接语义，不能替代其他 checkpoint 的 optimizer、scheduler、
-sampler 和 RNG 状态。任何清理前都应先生成只读盘点并完成异地备份。
+S2 使用新的 500-step scheduler，从官方初始化开始，而不是续跑任何 100-step run。训练依次在
+step100、250、500 停止；每个阶段通过产物、resume、parity、overlap、SkyScript retrieval 和
+RSICD-val 保持门槛后才进入下一段。
 
-## 11. 代码入口与更新要求
+| step | validation loss | SkyScript mean recall | 相对 step0 | RSICD mean recall | 相对官方 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 / official | 1.5994003 | 0.0862721 | 0 | 0.1587751 | 0 |
+| 100 | 1.0224082 | 0.1127826 | +0.0265105 | 0.1539610 | -0.0048141 |
+| 250 | 0.8698717 | 0.1283189 | +0.0420469 | 0.1542657 | -0.0045094 |
+| 500 | **0.7617921** | **0.1375668** | **+0.0512947** | **0.1542962** | **-0.0044790** |
+
+结论：
+
+- validation 每 50 step 严格下降，step500 为 best；相对 step0 下降 52.37%；
+- SkyScript retrieval 在 100→250→500 持续提高，step500 相对 step0 提高 59.46%；
+- 没有出现历史 ChatEarthNet 路线中“短期改善、长训练反转”的现象；
+- RSICD mean recall 在三个阶段都低于官方，但退化约 0.45–0.48 个百分点，满足预先规定的
+  退化不超过 1 个百分点门槛；
+- step500 是当前协议内的首选 checkpoint，但不能据此声称外部能力全面改善。
+
+### 2.4 外部保持的方向性限制
+
+S1 和 S2 都显示 RSICD 方向不对称：
+
+- image→text 多数 recall 和 rank 改善；
+- text→image recall 系统性下降；
+- mean recall 门槛通过会掩盖这个方向性权衡。
+
+因此当前允许的表述是“RSICD-val 平均检索能力在预设门槛内得到保持”。不能写成“RSICD 双向能力
+全面提高”或“跨数据源泛化已经解决”。后续继续报告两个方向的全部 R@1/R@5/R@10、median rank
+和 mean rank，但不根据已经观察到的 RSICD-val 结果事后修改主门槛。
+
+## 3. 证据身份与核验范围
+
+| 范围 | 身份 |
+| --- | --- |
+| seed11 初始训练代码 | `4c564d25f3946531055e26dea6890fb892fed2fc` |
+| Gate S0 代码 | `9202423` |
+| seed23/47 与 Gate S1 | `bda81a2d27c0ded8529937c80d02ecbfccdcb6ae` |
+| Gate S2 训练与编排 | `78930a4ff820ccc7afcda4ed79e2bd0f456875d6` |
+| DINOv3 上游 | `6876159a11b4df116f30f667f8c9888617df0751` |
+| S1 summary SHA-256 | `e306ee2a4404b3e371fac9ab9e63d302514c34bc21ed46e01e45f658eb18c1cf` |
+| S2 summary SHA-256 | `3620403b3653c8955177e612e8da0d23d766fe369187f2fb367b4d32f071ebca` |
+
+本次读取的是用户从服务器下载的 S2 `summary.json` 副本。没有直接登录服务器逐个读取子报告；
+服务器中的训练目录、stage summary、preflight、parity、overlap、逐 checkpoint retrieval 和 resume
+history 是完整证据来源。
+
+seed11 与 seed23/47 的训练 project commit 不同，但两者之间没有改变训练器、adapter 或模型训练
+实现；新增的是评测、编排、配置和文档。正式报告仍须披露 provenance，不把不同 commit 写成同一
+运行身份。
+
+## 4. 冻结的数据协议
+
+### 4.1 数据与 split
+
+当前使用 SkyScript language-polished top30 的 images2+images3：
+
+- 370,317 条候选记录；
+- 按规范化 `title_raw` 分组，seed11 每组确定性选择一张图；
+- 得到 40,550 个唯一 caption-image pair；
+- seed23 按 caption 确定性拆分为 36,495 train 和 4,055 validation；
+- train/validation 规范化 caption overlap=0；
+- 精确文件 overlap=0，解码像素 overlap=0。
+
+固定输入：
+
+| 文件 | 样本数 | SHA-256 |
+| --- | ---: | --- |
+| `skyscript_images23_train_raw_unique36495_seed11_global77.jsonl` | 36,495 | `4264d884d564631816baf3e339e7ca12be2958966d99a60f6a75ae3d5d4dbaec` |
+| `skyscript_images23_val_raw_unique4055_seed23_global77.jsonl` | 4,055 | `062238716b8fddad890b4f97354588ad7524f1099667d3c0baa932002845b7f6` |
+
+manifest 文件名中的 seed11 是代表图片选择身份，seed23 是 split 身份；实验 seed 改变时不得改名。
+
+文本固定使用 `title_raw` 和真实 dino.txt tokenizer 的 77-token global 协议。统一视角模板不再是
+M4 前置任务，未来 RQ2 若执行，必须使用完全相同图片与 split 做 matched-image 对照。
+
+### 4.2 为什么当前不再单独切 scale
+
+当前 500 optimizer steps、physical batch16、gradient accumulation4 共消费 32,000 个样本，约为
+36,495 条 train 的 87.7%，还不到完整一轮数据。此时把 train 人为缩为 10k 会带来两种混杂：
+
+- 固定 steps 时，10k 数据会被重复看更多轮；
+- 固定 epochs 时，优化步数和 scheduler 预算又不同。
+
+images2+images3 只有 40,550 个唯一 caption-image pair；完整 polished CSV 的规范化唯一文本统计上限
+约 52,923。当前可形成的纯 unique-caption 规模跨度不足以支撑有解释力的 scale law。为了回答 RQ1，
+直接在已经验证成功的完整 36,495 train 上控制 Web/SAT 变量，比退回任意 10k 更合理。
+
+因此具体里程碑调整为：
+
+- M4 使用固定 36,495/4,055 协议完成视觉域对照；
+- 原 M5 scale 暂停，不删除架构中的抽象研究问题；
+- 只有扩展更多分片，或利用 multi-positive 正确恢复“同 caption 多图片”后，才重新设计嵌套规模实验；
+- 如果未来确实研究 data efficiency，必须提前冻结“固定样本曝光、固定 steps 或固定 epochs”中的一种
+  比较语义，不能事后选择有利口径。
+
+### 4.3 仍未解决的数据风险
+
+- exact caption 唯一不等于语义唯一；同义描述仍可能成为假负例；
+- 精确文件/像素 hash 无法排除同一区域的不同裁剪、尺度或时间版本；
+- 当前 CSV 没有直接可用于 geography-group split 的可靠坐标；
+- 每个 caption 只保留一张图降低了歧义，但也丢失了合法多正例和真实频率信息；
+- SkyScript validation 与 train 来自同一生成和筛选流程，不是独立跨数据源测试。
+
+## 5. 冻结的方法基线
+
+### 5.1 模型与可训练范围
+
+当前 baseline：
+
+```text
+official normalized image embedding (2048)
+  → LayerNorm
+  → Linear(2048, 256)
+  → GELU
+  → zero-initialized Linear(256, 2048)
+  → residual add
+  → L2 normalize
+```
+
+可训练参数为 1,054,976，仅属于 image adapter。冻结：
+
+- DINOv3 backbone；
+- dino.txt vision head；
+- text backbone；
+- text projection；
+- logit scale。
+
+adapter 只处理全局 image embedding，不处理 patch tokens，因此不能支持 local alignment 结论。
+
+### 5.2 当前 500-step 协议
+
+| 项目 | 设置 |
+| --- | --- |
+| seed | 11（S2）；跨 seed 100-step 证据为 11/23/47 |
+| physical batch | 16 |
+| gradient accumulation | 4 |
+| optimizer effective samples/step | 64 |
+| contrastive candidates/forward | 16（queue 关闭时） |
+| precision | BF16 |
+| optimizer | AdamW |
+| adapter learning rate | `1e-4` |
+| weight decay | 0.01 |
+| max grad norm | 1.0 |
+| total steps | 500 |
+| warmup | 50 |
+| scheduler | linear warmup + cosine decay |
+| validation/checkpoint | 每 50 step |
+| augmentation | 关闭 |
+| negative queue | 关闭 |
+
+梯度累积不会把对比候选从 16 扩为 64；它只扩大一次 optimizer update 消费的样本数。
+
+## 6. unique-caption 与 negative queue 的关系
+
+### 6.1 unique-caption 现在已经发挥作用
+
+使用 unique-caption 的目的不只是在未来打开 queue：
+
+1. 当前每次 forward 的 16 个样本互为负例。即使 queue_size=0，重复 caption 也会在普通 in-batch
+   InfoNCE 中制造一对多关系却只给一个 target 的假负例。
+2. caption 互斥使 train/validation 文本泄漏更容易定义和审计。
+3. 每个文本只选一张图，简化了当前“一图一文、单正例”retrieval 和 loss 语义。
+4. 它为 future queue 去掉了最明确的一类 exact-caption collision，使 queue 实验更可控。
+
+所以当前 adapter-only 成功与 unique-caption 清洗是同一基线的组成部分，不能说“因为没有 queue，
+去重没有用”。
+
+### 6.2 queue 关闭不是因为 adapter 太小
+
+queue 决定 softmax 能看到多少负样本，与有多少可训练参数没有直接对应关系。小 adapter 同样可能从
+更丰富的负例中获益。当前关闭 queue 的真实原因是先隔离最小因果变量，并避免现有实现的风险：
+
+- `EmbeddingQueue` 保存 detached image/text embeddings，不保存 sample ID、caption group 或地点组；
+- loss 对每个 query 只承认一个正例，无法 mask 已知同义或近重复样本；
+- text tower 冻结时 queued text embedding 是稳定的，但 image adapter 持续变化，queued image
+  embedding 会逐渐 stale；
+- queue 同时改变两个方向的候选集合，可能放大当前 RSICD 的方向性权衡；
+- 历史 4096 queue 与其他变量同时变化，不能作为当前 queue 有效性的证据。
+
+unique-caption 是安全使用 queue 的重要准备，但不是充分条件。
+
+### 6.3 未来 queue 实验的前置工程
+
+在打开 queue 前按顺序完成：
+
+1. 为训练记录保留稳定 sample ID、normalized-caption group，并尽可能增加近重复/地理 group；
+2. queue 同步保存这些 identity，loss 能 mask 已知正例或采用 multi-positive target；
+3. 明确 symmetric queue 中 stale image embedding 的策略；可以先研究只给 image→text 使用冻结文本
+   negative 的非对称诊断，但不能与 symmetric baseline 混称；
+4. 增加 queue occupancy、age、masked-negative count 和 in-batch-only loss 监控；
+5. 先做单变量小容量 pilot，例如 256，再决定是否到 1024；不直接恢复历史 4096；
+6. 数据、augmentation、trainable scope、LR 和 schedule 全部保持不变。
+
+queue 只有在自己的同源 retrieval 改善且外部保持不恶化时才接受。失败也要保留，因为它能说明
+“唯一 caption 足以清除精确冲突，但不足以保证大负样本集合安全”。
+
+## 7. 下一步：M4 / RQ1 Web–SAT 严格对照
+
+### 7.1 要回答的问题
+
+在相同 SkyScript 数据、文本、adapter、优化、训练预算和评测下，更换视觉预训练域会如何影响：
+
+- 各自初始化时的图文能力；
+- 适配带来的相对增益；
+- 适配后的绝对性能；
+- 外部保持与方向性权衡；
+- 长日程稳定性。
+
+SAT 路径使用 SAT DINOv3 backbone 加通用 dino.txt vision/text head。这不是官方联合训练的
+SAT-dino.txt，存在表示兼容性混杂。结果应解释为“通用对齐头迁移到不同视觉初始化后的适配行为”，
+不能简化为纯视觉预训练域优劣。
+
+### 7.2 M4-A：matched seed11 staged pilot
+
+Web 对照直接使用已经通过的 S2 run。新增 SAT 配置只允许改变：
+
+- `experiment.name`；
+- `experiment.output_dir`；
+- `model.backbone_domain = "sat"`；
+- `model.backbone_weights = assets/checkpoints/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth`。
+
+其余字段与 `configs/skyscript_web_adapter_500step_seed11.toml` 完全相同。SAT 也必须从自己的官方
+初始化开始，不能加载 Web adapter 或历史 SAT checkpoint。
+
+执行仍为 0→100→250→500。每个阶段对每个 backbone 分别检查：
+
+- 当前 validation loss 低于自身 step0，best 不回到 step0；
+- SkyScript retrieval 高于自身 step0；
+- RSICD-val mean recall 相对自身 official 初始化退化不超过 0.01；
+- step0 parity、train/val overlap、train/RSICD overlap、checkpoint 和 resume 全部通过。
+
+比较报告必须同时给出：
+
+1. Web/SAT 各自 step0 的绝对值；
+2. 各自适配前后的 delta；
+3. 同 step 的绝对差；
+4. 双向 retrieval 全指标；
+5. trainable 参数、预处理域、权重 hash、代码和 manifest 身份。
+
+任一 SAT stage 失败即停止 SAT 长训练，但失败不是工程失败时仍属于有效研究结果。不能因为 SAT
+初始化绝对值低，就降低其保持门槛或更换外部集。
+
+### 7.3 M4-B：跨 seed 的 RQ1 证据
+
+M4-A 是 matched-seed pilot，不足以单独完成视觉域结论。预先规定下一层复现：
+
+1. 为 Web 500-step schedule 和 SAT 500-step schedule 分别创建 seed23/47 配置；
+2. 先让两域所有 seed 运行到 stage100，形成真正相同 warmup50/total500 scheduler 的三 seed 对照；
+   不能用 S1 的 warmup10/total100 run 冒充这一对照；
+3. 两域的某个 seed 若在 stage100 失败，保留并汇报，不能只延长通过的 seed 后报告最好结果；
+4. 两域三个 seed 均通过 stage100 后，再按相同规则扩展到 250/500；
+5. 最终按 domain 报告逐 seed、mean、sample std 和 Web–SAT difference，不只报告最好 checkpoint。
+
+只有 M4-B 给出匹配的跨 seed 证据后，才能对 RQ1 做稳定性结论。资源不足时，可以把 M4-A 写成
+pilot，并明确 M4-B 未完成，而不能把单 seed 写成正式域优劣。
+
+### 7.4 下一会话的具体代码任务
+
+下一会话从这里开始，不先做 queue、模板或额外解冻：
+
+1. 新建 SAT seed11 500-step 不可变配置；
+2. 增加配置差异测试，确保除实验身份和 SAT backbone 两项外完全一致；
+3. 抽取或复用 S2 staged runner 的公共核验逻辑，避免复制后出现 Web/SAT 门槛漂移；历史 S2 脚本和
+   已有产物身份不能被改写；
+4. 实现 M4-A 汇总工具，读取 Web S2 和 SAT staged reports，输出绝对值、within-domain delta 和
+   between-domain difference；
+5. 先只运行 SAT seed11 stage100；通过后再到 250/500；
+6. M4-A 完成后再生成 M4-B seed23/47 配置与编排，不提前启动其他实验轴。
+
+建议输出身份：
+
+```text
+configs/skyscript_sat_adapter_500step_seed11.toml
+outputs/skyscript_images23_top30raw_sat_imageadapter256_36495_500step_seed11/
+outputs/skyscript_gate_m4_sat_seed11/
+outputs/skyscript_m4_rq1_seed11/summary.json
+```
+
+## 8. M4 之后：逐步扩大可训练范围
+
+当前代码已经支持 `train_vision_head`、`train_text_projection`、`text_last_k` 和
+`train_logit_scale`，但 optimizer 只有一个全局 learning rate。直接打开这些开关会把 adapter 的
+`1e-4` 同时施加到预训练官方模块，无法区分“模块无效”和“LR 过大”。
+
+因此先增加显式 parameter groups，并把每组 LR、参数名、数量写入 provenance/checkpoint 核验。
+然后在选定 backbone 上按以下 ladder 单变量推进：
+
+| 阶段 | 相对上一步唯一新增项 | 目的 |
+| --- | --- | --- |
+| E0 | adapter only（当前 baseline） | 最小稳定参照 |
+| E1 | + vision head，使用较低独立 LR | 增加 image-side 对齐能力 |
+| E2 | + text projection，使用较低独立 LR | 允许最终文本映射适配 |
+| E3 | + 最后 1 个 text block 与 final norm | 测试轻量语言域适配 |
+| E4 | last 2/4 text blocks，仅在 E3 通过后 | 测试更大语言容量 |
+| E5 | logit scale 单独解冻 | 研究校准，不让它掩盖表示质量 |
+
+规则：
+
+- 每个候选都从官方初始化开始，不从前一个 ladder checkpoint 接着训练；
+- 先 seed11 stage100 筛查，再逐段到 250/500；最终候选再做 seed23/47；
+- 每次只增加一个可训练组件，queue 和 augmentation 保持关闭；
+- image backbone blocks 当前没有细粒度解冻配置，不在没有明确 last-k、LR group 和保存测试前解冻；
+- 若某一步外部保持失败，优先研究表示 anchoring/distillation，而不是继续增加层数赌恢复。
+
+这个 ladder 回答“额外容量是否带来可复现收益”，不能与 Web/SAT 对照或 queue 实验混在同一个表里
+当作单因素结论。
+
+## 9. 可选研究分支
+
+### 9.1 Negative queue / multi-positive
+
+完成 M4 baseline 后按第 6.3 节开展。它是优先级较高的方法扩展，因为当前 contrastive candidates
+只有 16，unique-caption 又已经提供了较干净的起点。但必须先补 identity-aware masking 或明确的
+multi-positive 语义。
+
+### 9.2 RQ2 文本表达
+
+`title_raw` 与 `An aerial image. It shows: ...` 的 matched-image 对照保留，但不再阻塞 M4。只有在
+研究问题需要解释视角模板、结构化或层级文本时执行；不得重新选择图片或 split。
+
+### 9.3 Scale
+
+暂缓。扩展到更多分片、更多唯一文本，或恢复多图同文本后，重新定义嵌套数据集和训练预算，再决定
+是否恢复正式 M5 scale。
+
+### 9.4 Local alignment
+
+当前 adapter 不作用于 patch token。局部对齐需要独立模块、短语/区域关系和定位或分割评价，属于
+后续 RQ3，不从全局 retrieval 结果外推。
+
+## 10. 当前禁止事项
+
+- 不修改或续跑已经完成的 S0/S1/S2 输出；
+- 不从 Web checkpoint 初始化 SAT adapter；
+- 不把 SAT+dino.txt 迁移头称为官方 SAT-dino.txt；
+- 不为了让 SAT 通过而修改 RSICD 门槛、数据或 checkpoint 选择规则；
+- 不使用 RSICD test 或全量 EuroSAT 循环调参；
+- 不同时改变 backbone、trainable scope、queue、augmentation 或 caption；
+- 不直接恢复 4096 queue；
+- 不把 gradient accumulation=4 写成 64 个对比候选；
+- 不把当前 36,495 样本称为已经完成 scale study；
+- 不删除 step0、中间 stage、best、provenance、resume history 或失败报告；
+- 不因 S2 通过就宣称 M4、M5、RQ2、RQ3 或跨数据源全面泛化已经完成。
+
+## 11. 路径与资产
+
+### 11.1 环境
+
+```text
+本地：/Users/wangyue/Documents/ChatGPT/Dinov3txtforSAT
+服务器：/root/autodl-tmp/Dinov3txtforSAT
+虚拟环境：/root/autodl-tmp/Dinov3txtforSAT/.venv
+```
+
+服务器已验证：Python 3.12.3、PyTorch 2.7.1+cu128、CUDA 12.8、RTX 4090、BF16。
+
+### 11.2 模型资产
+
+| 文件 | SHA-256 |
+| --- | --- |
+| Web ViT-L/16 | `8aa4cbddda325040fc78db2c272754af6ebe8ff2c55f6ec4f1964d8890f66035` |
+| SAT ViT-L/16 | `eadcf0ffc02418b6c22a885ea1a7aaeeef84fbf0f5bb4d0b7d1d36e68a964f48` |
+| dino.txt head/text encoder | `a442d8f52a3a7ad715bf6b7d8117fb3a84d54249389b0a13f6956cd0d2eca4f0` |
+| BPE gzip | `924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a` |
+
+`bpe_simple_vocab_16e6.txt.gz` 必须保持 gzip 压缩状态。
+
+### 11.3 主要代码入口
 
 | 任务 | 入口 |
 | --- | --- |
-| 当前实验参数 | seed 11 基线 `configs/skyscript_web_adapter_100step.toml`；S1 复现 `configs/skyscript_web_adapter_100step_seed23.toml`、`configs/skyscript_web_adapter_100step_seed47.toml`；S2 `configs/skyscript_web_adapter_500step_seed11.toml` |
-| 定向抽取、确定性拆分 | `tools/extract_skyscript_subset.py`、`tools/split_skyscript_selection.py` |
-| manifest 与文本预算 | `tools/prepare_skyscript.py`、`tools/prepare_global77_manifest.py`、`tools/audit_manifest_text.py` |
-| 当前适配模块与冻结 | `src/dinotxt_rs/models/embedding_adapter.py`、`src/dinotxt_rs/models/official_dinotxt.py` |
-| 产物与数据核验 | `tools/verify_training_run.py`、`tools/audit_manifest_image_overlap.py` |
-| 初始化与下游评测 | `src/dinotxt_rs/evaluation/`、`src/dinotxt_rs/cli/evaluate_rsicd.py`、`src/dinotxt_rs/cli/evaluate_skyscript.py` |
-| Gate S0 完整执行 | `scripts/run_skyscript_gate_s0.sh`（使用 `bash` 执行，不能 `source`） |
-| Gate S1 训练、逐 seed 核验与汇总 | `scripts/run_skyscript_gate_s1.sh`（使用 `bash` 执行，不能 `source`） |
-| Gate S1 三 seed 汇总 | `tools/summarize_skyscript_gate_s1.py` |
-| Gate S2 分段训练、门槛与汇总 | `scripts/run_skyscript_gate_s2.sh`（使用 `bash` 执行，不能 `source`） |
-| Gate S2 阶段/最终汇总 | `tools/summarize_skyscript_gate_s2.py` |
-| 历史异常产物盘点 | `tools/inspect_training_artifacts.py` |
+| 当前 Web S2 配置 | `configs/skyscript_web_adapter_500step_seed11.toml` |
+| 训练 | `src/dinotxt_rs/cli/train.py` |
+| adapter 与冻结 | `src/dinotxt_rs/models/embedding_adapter.py`、`official_dinotxt.py` |
+| loss 与 queue | `src/dinotxt_rs/losses/contrastive.py` |
+| 训练产物核验 | `tools/verify_training_run.py` |
+| step0 parity | `src/dinotxt_rs/cli/check_step0_parity.py` |
+| SkyScript retrieval | `src/dinotxt_rs/cli/evaluate_skyscript.py` |
+| RSICD retrieval | `src/dinotxt_rs/cli/evaluate_rsicd.py` |
+| S1 编排/汇总 | `scripts/run_skyscript_gate_s1.sh`、`tools/summarize_skyscript_gate_s1.py` |
+| S2 编排/汇总 | `scripts/run_skyscript_gate_s2.sh`、`tools/summarize_skyscript_gate_s2.py` |
 
-历史 `run_m4_*`、`run_m5_*` 和 ChatEarthNet pilot 脚本仅用于追溯，不能当作当前 SkyScript
-入口。下一次更新本交接时，填写每个 Gate 的报告路径、代码/输入身份、结果与失败分支；未经验证的
-计划保持待办状态。研究动机与架构规则不再复制到这里。
-
-## 12. 操作附录
-
-本附录合并原 `SKYSCRIPT_ADAPTER_PREPARATION.md` 的当前有效步骤。命令均在项目根目录运行。
-已有数据和输出先核验复用；这些是环境或数据重建说明，不表示需要重新训练已完成的候选。
-原始 CSV 和 ZIP 的路径必须替换为真实路径；不要用 `--allow-missing` 绕过缺图。
-
-### 12.1 环境与模型资产
-
-AutoDL 新环境使用：
+代码检查：
 
 ```bash
-cd /root/autodl-tmp/Dinov3txtforSAT
-bash scripts/bootstrap_autodl.sh
-source .venv/bin/activate
-bash scripts/download_assets.sh weights
+ruff check .
+pytest
+python -m compileall -q src tools
 ```
 
-现有环境直接激活并核对第 3 节版本与资产 hash；不要重复安装。bootstrap 面向 Python 3.12、
-CUDA 12.8 的服务器环境，需核实驱动匹配。`download_assets.sh all/data-metadata/data-rgb`
-仍属于 ChatEarthNet 下载路径，不负责获取 SkyScript。当前 SkyScript 原 CSV、大 ZIP 和已抽取包
-按第 4 节身份移交；不能从 ZIP 文件名猜测其版本。tokenizer 词表保持 gzip 状态。
+## 12. 下一会话接手清单
 
-### 12.2 定向抽取与拆分
+1. 先读本文第 7 节，不重启 S0/S1/S2，也不先做 queue。
+2. 核对 `git status`、当前 HEAD、S2 summary 和 SAT 权重 hash。
+3. 创建 SAT seed11 500-step 配置，只改变第 7.2 节允许的字段。
+4. 为 Web/SAT 配置差异、SAT step0 parity 和 staged resume 增加测试。
+5. 实现 M4-A staged 脚本与 Web/SAT 汇总工具。
+6. 先运行 SAT 0→100；只有 Gate 通过才继续到 250/500。
+7. 输出失败时保留全部产物并写原因；输出成功时再准备 M4-B 跨 seed，不立即混入 queue 或额外解冻。
 
-```bash
-python tools/extract_skyscript_subset.py \
-  --csv SkyScript_train_top30pct_filtered_by_CLIP_laion_RS_language_polished.csv \
-  --archives /替换为真实路径/images2.zip /替换为真实路径/images3.zip \
-  --output-root assets/data/raw/skyscript/images23_unique40550 \
-  --selection-output assets/data/raw/skyscript/images23_unique40550.csv \
-  --audit-output assets/data/raw/skyscript/images23_unique40550.extract.audit.json \
-  --group-field title_raw \
-  --selection-prefix images2 images3 \
-  --include-prefix images2 images3 \
-  --max-per-group 1 \
-  --limit 40550 \
-  --seed 11 \
-  --bundle-output assets/data/raw/skyscript/skyscript_images23_unique40550.zip \
-  --dry-run
-```
-
-确认 dry-run 的 `selected_images=40550`、`missing=0` 后删除 `--dry-run` 执行。脚本是在两包
-并集上先去重，不是各自去重后拼接，所以共享的 caption 不会重复进入训练。
-
-如果不能同时保留两个大 ZIP，仍使用相同的 `--selection-prefix images2 images3`，但第一次只传
-`images2.zip` 并设置 `--include-prefix images2`；第二次只传 `images3.zip` 并设置
-`--include-prefix images3`。两次使用同一个 output-root 和 selection-output，不同的 audit/bundle
-文件名。第二次会验证并复用字节完全相同的 40,550 条全局选择清单。
-
-完成两包抽取后，将 40,550 个唯一 caption 确定性拆为 36,495 train 和 4,055 validation：
-
-```bash
-python tools/split_skyscript_selection.py \
-  --input assets/data/raw/skyscript/images23_unique40550.csv \
-  --train-output assets/data/raw/skyscript/images23_unique36495_train.csv \
-  --val-output assets/data/raw/skyscript/images23_unique4055_val.csv \
-  --audit-output assets/data/raw/skyscript/images23_unique40550.split.audit.json \
-  --group-field title_raw \
-  --val-count 4055 \
-  --seed 23
-```
-
-拆分工具要求输入 caption 已全局唯一；发现重复 caption 或 filepath 会失败。train/val 保持原 CSV
-顺序，并在审计中记录输入、两个输出的 SHA-256。
-
-其他模式只在未来扩展时使用：`--all-csv-rows` 按分片抽取 CSV 全部引用，默认 unique 模式
-可设置全局选择上限。执行前看 `--help` 与 dry-run 报告，不再沿用旧文“首轮需要 50k”的安排。
-抽取工具拒绝缺失或歧义成员、危险路径、冲突覆盖，所选文件经过 CRC 检查；原始大 ZIP 保留复核。
-
-### 12.3 生成当前文本协议
-
-快速路径已经生成拆分后的 CSV。主基线直接使用 `title_raw`，不再次抽样：
-
-```bash
-python tools/prepare_skyscript.py \
-  --csv assets/data/raw/skyscript/images23_unique36495_train.csv \
-  --images-root assets/data/raw/skyscript/images23_unique40550 \
-  --split train \
-  --caption-field title_raw \
-  --caption-mode full \
-  --output assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11.jsonl \
-  --audit-output assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11.audit.json
-```
-
-对 `images23_unique4055_val.csv` 执行相同命令并把 `--split` 改成 `val`，输出
-`skyscript_images23_val_raw_unique4055_seed23.jsonl`。
-
-模板消融使用同一 selection CSV 和图片，只把 `caption-field` 改成 `title`、`caption-mode` 改成
-`auto`，输出独立 manifest。此时 `auto` 会把 aerial/satellite 两种前缀统一为
-`An aerial image. It shows: ...`，不引入人为的双前缀变量。
-
-先用真实 dino.txt tokenizer 在保留完整语义的前提下做 complete-word backoff。即使所有 caption
-已经能放入 77 tokens，这一步也会产生独立、可审计且内容不变的 global77 manifest。不要改用
-旧的第一句截断器。
-
-```bash
-python tools/prepare_global77_manifest.py \
-  --input assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11.jsonl \
-  --output assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.jsonl \
-  --audit-output assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.audit.json \
-  --dinov3-repo external/dinov3 \
-  --bpe-vocab assets/checkpoints/bpe_simple_vocab_16e6.txt.gz \
-  --context-length 77 \
-  --strategy complete-word-backoff
-```
-
-对快速路径的 validation manifest 执行相同转换并输出
-`assets/data/manifests/skyscript_images23_val_raw_unique4055_seed23_global77.jsonl`。随后运行只读
-复核；任何 caption 仍超过 77 tokens 都会让命令返回非零：
-
-```bash
-python tools/audit_manifest_text.py \
-  --manifest assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.jsonl \
-  --dinov3-repo external/dinov3 \
-  --bpe-vocab assets/checkpoints/bpe_simple_vocab_16e6.txt.gz \
-  --output assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.text-audit.json \
-  --require-fit
-```
-
-对 validation 同样运行 `audit_manifest_text.py --require-fit`。生成清单的 `image` 包含环境绝对
-路径，因此本地 manifest hash 不应强求等于服务器 hash；原 run 的服务器清单身份以第 4 节为准。
-文本 backoff 后仍需复核重复与 split 交集，清洗不能悄悄改变一一配对假设。
-
-### 12.4 Gate S0 的产物核验与图像审计
-
-以下在保有原始服务器产物的环境执行。核验器向标准输出写 JSON；仅成功时发布报告，避免覆盖
-已有证据。首次保存前确认下列正式报告和临时文件都不存在；已有报告先读取核实。
-
-推荐直接运行完整编排脚本：
-
-```bash
-bash scripts/run_skyscript_gate_s0.sh
-```
-
-不要使用 `source scripts/run_skyscript_gate_s0.sh`；脚本失败只应结束子进程，不应关闭当前终端。
-脚本会校验并复用已有正式报告、保留失败日志，并在
-`outputs/skyscript_gate_s0_seed11/summary.json` 汇总门槛结果。以下分步命令仅用于排查。
-
-```bash
-set -euo pipefail
-run_dir=outputs/skyscript_images23_top30raw_imageadapter256_36495_100step_seed11
-test ! -e "$run_dir/verification_report.json"
-test ! -e "$run_dir/verification_report.json.part"
-verification_tmp="$(mktemp outputs/.skyscript-verification.XXXXXX)"
-python tools/verify_training_run.py \
-  --output "$run_dir" \
-  --expected-steps 100 --expected-target-steps 100 --require-completed \
-  --expected-train-manifest-sha256 4264d884d564631816baf3e339e7ca12be2958966d99a60f6a75ae3d5d4dbaec \
-  --expected-val-manifest-sha256 062238716b8fddad890b4f97354588ad7524f1099667d3c0baa932002845b7f6 \
-  --expected-dinov3-commit 6876159a11b4df116f30f667f8c9888617df0751 \
-  --expected-final-queue-size 0 \
-  --required-checkpoint-step 0 --required-checkpoint-step 25 \
-  --required-checkpoint-step 50 --required-checkpoint-step 75 --required-checkpoint-step 100 \
-  --require-validation --validation-every 25 --require-best-checkpoint \
-  --expected-validation-loss-batch-size 16 --expected-validation-forward-batch-size 64 \
-  > "$verification_tmp"
-mv "$verification_tmp" "$run_dir/verification_report.json"
-```
-
-临时报告必须放在训练目录外，否则核验器会把自己的 `*.part` 识别为未完成训练产物。如果运行失败，
-先查看错误与临时报告，不能把部分输出登记为通过。
-
-```bash
-python tools/audit_manifest_image_overlap.py \
-  --left-manifest assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.jsonl \
-  --right-manifest assets/data/manifests/skyscript_images23_val_raw_unique4055_seed23_global77.jsonl \
-  --output outputs/skyscript_s0_train_val_overlap.json \
-  --require-zero-overlap
-```
-
-审计输出若已存在则先读取，不覆盖。对训练集与 RSICD、EuroSAT 清单也应分别执行同类审计；
-这些检查无法排除地理近重复。RSICD 开发保持评测入口为
-`python -m dinotxt_rs.cli.evaluate_rsicd`，必须显式 `--split val`（默认是 test），
-微调模型同时提供 `--checkpoint` 与 `--training-output`，配置使用该 run 保存的原始配置。
-
-adapter parity 入口已经适配，使用固定的 16 条 SkyScript validation 输入运行：
-
-```bash
-python -m dinotxt_rs.cli.check_step0_parity \
-  --config "$run_dir/config.toml" \
-  --checkpoint "$run_dir/step_0000000.pt" \
-  --training-output "$run_dir" \
-  --input-manifest assets/data/manifests/skyscript_images23_val_raw_unique4055_seed23_global77.jsonl \
-  --batch-size 16 \
-  --output "$run_dir/skyscript_step0_parity.json"
-```
-
-SkyScript 一一配对全局 retrieval 入口为 `python -m dinotxt_rs.cli.evaluate_skyscript`。对 step
-0/25/50/75/100 分别传入对应的 `--checkpoint`、相同的 `--training-output "$run_dir"`、上面的
-validation global77 manifest、`--split val` 和互不覆盖的 `--output`。输出明确记录 manifest
-身份、候选数、正例定义、双向 R@1/R@5/R@10 与 mean recall。
-
-当前 10-step/100-step 配置是已存在实验的复现身份，不能在原输出目录直接重跑。
-从 100 改到 500 的新日程以及跨 seed 新实验按 Gate S1/S2 创建新配置；严格 resume 还会检查
-项目 commit，文档提交后也不能放宽身份规则去恢复旧 run。
+本轮目标不是让 SAT 必须获胜，而是获得一个身份严格、可解释的视觉域对照。SAT 失败、只在同域改善
+或外部保持不足，都可能是 RQ1 的有效答案。
