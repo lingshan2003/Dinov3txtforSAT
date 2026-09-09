@@ -10,14 +10,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+# Direct execution sets sys.path[0] to tools/ rather than the repository root.
+# Add the root before importing the frozen S2 implementation. Module execution
+# (python -m tools...) and pytest already have the correct path.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools.summarize_skyscript_gate_s2 import (
     STAGES,
     _read_json,
     _write_atomic_immutable,
-)
+)  # noqa: E402
 from tools.summarize_skyscript_gate_s2 import summarize_stage as summarize_s2_stage
 
 SAT_BACKBONE_SHA256 = "eadcf0ffc02418b6c22a885ea1a7aaeeef84fbf0f5bb4d0b7d1d36e68a964f48"

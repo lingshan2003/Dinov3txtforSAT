@@ -1,9 +1,13 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import tools.summarize_skyscript_gate_m4_sat as m4_sat
+
+TOOL = Path("tools/summarize_skyscript_gate_m4_sat.py")
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -45,6 +49,16 @@ def _prepare_identity_evidence(root: Path, stage: int) -> tuple[Path, Path]:
             {"model": _model_identity(m4_sat.ADAPTER_TRAINABLE_PARAMETERS)},
         )
     return run_dir, gate_dir
+
+
+def test_direct_script_entrypoint_can_import_shared_s2_gate() -> None:
+    result = subprocess.run(
+        [sys.executable, str(TOOL), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Validate staged SAT evidence" in result.stdout
 
 
 def test_sat_identity_validation_accepts_frozen_assets(tmp_path: Path) -> None:
