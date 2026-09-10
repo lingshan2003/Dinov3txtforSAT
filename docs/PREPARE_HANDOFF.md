@@ -1,4 +1,4 @@
-# 最新交接：M4-A 单种子试验完成，进入 M4-B 跨种子对照
+# 最新交接：M4 / RQ1 正式完成，进入可训练容量 ladder
 
 更新时间：2026-09-10
 
@@ -10,8 +10,9 @@
 > 2048→256→2048 image embedding residual adapter，在 Web DINOv3 ViT-L/16 上能够跨
 > seed 稳定改善同源全局图文检索，并在 500-step 日程中持续改善而不发生历史路线的长训练反转。
 
-Gate S0、S1、S2 和 M4-A 均已通过。下一步是 **M4-B：Web 与 SAT 的 seed11/23/47
-严格跨种子对照**，先完成全部新增 run 的 stage100，不能提前只延长其中一部分。
+Gate S0、S1、S2、M4-A 和 M4-B 均已通过。**M4 / RQ1 的 Web–SAT 三 seed 严格对照已经
+正式完成**。下一步固定绝对性能更好的 Web 路径，进入第 8 节的可训练容量 ladder；先实现可核验的
+独立 learning-rate 参数组，再执行 E1（adapter + vision head）。
 
 本轮同时冻结以下研究决策：
 
@@ -145,6 +146,41 @@ validation loss 同样显示持续适配：Web 从 1.5994003 降至 0.7617921，
   backbone 的视觉表征质量。
 - seed11 只是 pilot。任何稳定性或 RQ1 总结必须等待 M4-B 的 matched 三 seed 结果。
 
+### 2.6 M4-B：Web–SAT matched 三 seed 正式对照通过
+
+正式 step500 跨种子报告：
+
+```text
+outputs/skyscript_m4_rq1_m4_b_stage500/summary.json
+```
+
+Web/SAT × seed11/23/47 六个 run 在 stage100、250、500 全部通过预注册 Gate。以下离散度均为
+sample standard deviation（ddof=1），SAT−Web 为同 seed 配对差异后再汇总。
+
+| 数据集/指标 | Web step500 | Web 同域 delta | SAT step500 | SAT 同域 delta | SAT−Web step500 | SAT−Web delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| validation loss | 0.7634067 ± 0.0042998 | -0.8369860 ± 0.0041016 | 1.1684883 ± 0.0038230 | -2.6957862 ± 0.0038978 | +0.4050816 ± 0.0077754 | -1.8588002 ± 0.0077946 |
+| SkyScript mean recall | 0.1400055 ± 0.0034379 | +0.0537060 ± 0.0034234 | 0.0638033 ± 0.0020638 | +0.0626661 ± 0.0020854 | -0.0762022 ± 0.0053554 | +0.0089601 ± 0.0053554 |
+| RSICD mean recall | 0.1554845 ± 0.0039894 | -0.0030875 ± 0.0040383 | 0.0624924 ± 0.0032465 | +0.0578204 ± 0.0032635 | -0.0929921 ± 0.0027745 | +0.0609080 ± 0.0029723 |
+
+三 seed 方向完全一致：
+
+- SkyScript step500 的 Web 绝对 mean recall 在每个 seed 都高于 SAT；Web−SAT 优势约
+  0.0716–0.0821。
+- SAT 在每个 seed 的 SkyScript 同域增量都略大于 Web，但这只是从极低错配起点追赶，未转化为
+  更高绝对性能。
+- RSICD step500 的 Web 绝对 mean recall 在每个 seed 都高于 SAT；Web 路径相对官方初始化的
+  三 seed delta 为 -0.00448、-0.00625、+0.00146，均满足预设的 -0.01 保持门槛。
+- SAT 在 RSICD 上也从近乎失效的初始化明显恢复，但 step500 绝对性能仍远低于 Web。
+- 两域 validation loss 都稳定下降且 step500 为 best；SAT 的更大下降反映严重初始错配被部分
+  修复，不能解读成最终模型更好。
+
+RQ1 正式结论：在“冻结通用 dino.txt 对齐头 + 仅训练相同 image adapter”的协议下，Web DINOv3
+初始化提供显著且跨 seed 稳定的更高绝对图文检索性能。SAT DINOv3 表现出更大的可适配增量，但
+500 step 后仍无法弥合与通用对齐头的表示兼容性差距。因此后续主线选择 Web backbone。该结论只
+适用于当前对齐头迁移协议，不能外推为 SAT backbone 的纯视觉表征质量劣于 Web backbone；n=3 的
+均值与 sample std 是预注册重复实验的描述性证据，不作为大样本显著性检验。
+
 ## 3. 证据身份与核验范围
 
 | 范围 | 身份 |
@@ -160,10 +196,13 @@ validation loss 同样显示持续适配：Web 从 1.5994003 降至 0.7617921，
 | S2 summary SHA-256 | `3620403b3653c8955177e612e8da0d23d766fe369187f2fb367b4d32f071ebca` |
 | M4-A SAT summary SHA-256 | `7723b4cd6a4851e2c766ebd18aae0a97102b5cfee37f465df2d9309ddf55f2be` |
 | M4-A Web–SAT summary SHA-256 | `69bef90195afca5d19bd79a110f2261c0ece9a281fe6b71672aaa3d93ffaa9dc` |
+| M4-B step500 summary SHA-256 | `925ec542e5e2276fe903930f2295b6db78be1c4798dfb3429f0c185d548da24d` |
+| M4-B 编排与报告代码 | `97f5b6ab3f672772bb15158d8c05653f1130e2b6` |
 
-本次读取的是用户从服务器下载的 S2 `summary.json` 副本。没有直接登录服务器逐个读取子报告；
-服务器中的训练目录、stage summary、preflight、parity、overlap、逐 checkpoint retrieval 和 resume
-history 是完整证据来源。
+本次读取的是用户从服务器下载的 M4-B step500 `summary.json` 副本。汇总工具在服务器生成报告时
+已经逐一验证六个 stage report、冻结配置和 M4-A 前置身份；本会话没有直接登录服务器重新读取
+checkpoint。服务器中的训练目录、stage summary、preflight、parity、overlap、逐 checkpoint
+retrieval 和 resume history 仍是最底层完整证据来源，其 stage report hash 已写入 M4-B summary。
 
 seed11 与 seed23/47 的训练 project commit 不同，但两者之间没有改变训练器、adapter 或模型训练
 实现；新增的是评测、编排、配置和文档。正式报告仍须披露 provenance，不把不同 commit 写成同一
@@ -365,9 +404,8 @@ Web 对照直接使用已经通过的 S2 run。新增 SAT 配置只允许改变�
 
 ### 7.3 M4-B：跨 seed 的 RQ1 证据
 
-状态：即将执行。seed23/47 的 Web/SAT 配置与通用 staged runner 已准备。默认使用一键完整编排：
-它先运行四个新增 run 到 stage100 并与 seed11 统一汇总，全部通过后自动以同样方式进入
-stage250、stage500，不需要人工分三次续跑，也不会越过失败的全矩阵 Gate。
+状态：已完成并通过。六个 domain×seed run 均通过 stage100、250、500；正式结果和解释见
+2.6 节。RQ1 到此结束，不继续追加 seed 或事后更改 Gate。
 
 M4-A 是 matched-seed pilot，不足以单独完成视觉域结论。预先规定下一层复现：
 
@@ -381,26 +419,17 @@ M4-A 是 matched-seed pilot，不足以单独完成视觉域结论。预先规�
 只有 M4-B 给出匹配的跨 seed 证据后，才能对 RQ1 做稳定性结论。资源不足时，可以把 M4-A 写成
 pilot，并明确 M4-B 未完成，而不能把单 seed 写成正式域优劣。
 
-### 7.4 下一会话的具体代码任务
+### 7.4 M4 归档身份
 
-下一会话从这里开始，不先做 queue、模板或额外解冻：
-
-1. 新建 SAT seed11 500-step 不可变配置；
-2. 增加配置差异测试，确保除实验身份和 SAT backbone 两项外完全一致；
-3. 抽取或复用 S2 staged runner 的公共核验逻辑，避免复制后出现 Web/SAT 门槛漂移；历史 S2 脚本和
-   已有产物身份不能被改写；
-4. 实现 M4-A 汇总工具，读取 Web S2 和 SAT staged reports，输出绝对值、within-domain delta 和
-   between-domain difference；
-5. 先只运行 SAT seed11 stage100；通过后再到 250/500；
-6. M4-A 完成后再生成 M4-B seed23/47 配置与编排，不提前启动其他实验轴。
-
-建议输出身份：
+M4 已完成，以下产物只读保留，不作为后续实验的可续跑目录：
 
 ```text
 configs/skyscript_sat_adapter_500step_seed11.toml
 outputs/skyscript_images23_top30raw_sat_imageadapter256_36495_500step_seed11/
 outputs/skyscript_gate_m4_sat_seed11/
 outputs/skyscript_m4_rq1_seed11/summary.json
+outputs/skyscript_gate_m4_b_{web,sat}_seed{23,47}/
+outputs/skyscript_m4_rq1_m4_b_stage{100,250,500}/summary.json
 ```
 
 ## 8. M4 之后：逐步扩大可训练范围
@@ -517,14 +546,14 @@ python -m compileall -q src tools
 
 ## 12. 下一会话接手清单
 
-1. 不重启 seed11，也不混入 queue、额外解冻或其他实验轴。
-2. 在服务器运行 `scripts/run_skyscript_m4_b_full.sh`；脚本依次完成全矩阵 stage100→250→500。
-3. 单个 run 数值 Gate 失败时，脚本仍完成同 stage 的其余预注册 run 并保留证据，但不会让任何 run
-   进入下一 stage，避免选择性延长和选择性报告。
-4. 每个 stage 都生成独立的跨种子报告；最终检查
-   `outputs/skyscript_m4_rq1_m4_b_stage500/summary.json` 中的逐 seed、mean、sample std 和配对
-   SAT−Web difference。
-5. M4-B step500 报告生成后，把正式跨种子结论和证据 hash 写回本文，再决定后续实验轴。
+1. M4 / RQ1 已完成，不重跑 Web–SAT，也不根据结果追加有利 seed。
+2. 后续主线固定 Web backbone、当前 SkyScript 数据和 E0 adapter-only 基线；不同时混入 queue、
+   augmentation、文本模板或数据规模变化。
+3. 先为 adapter、vision head、text projection、text blocks 和 logit scale 实现显式 optimizer
+   parameter groups、独立 LR 配置和完整 provenance/checkpoint 核验。
+4. 第一项新实验只做 E1：相对 E0 唯一新增 vision head，并使用低于 adapter `1e-4` 的独立 LR。
+5. E1 仍从官方初始化开始，先 seed11 运行预注册短阶段 Gate；只有确认工程与方向成立后才扩展日程和
+   seed，不能复用历史 ChatEarthNet/queue/full-scope 开发 run 作为正式证据。
 
-本轮目标不是让 SAT 必须获胜，而是获得一个身份严格、可解释的视觉域对照。SAT 失败、只在同域改善
-或外部保持不足，都可能是 RQ1 的有效答案。
+M4 的目标已经实现：获得了身份严格、可解释且跨 seed 一致的视觉域对照。后续实验以 Web 路径为
+固定基线，但必须保留“SAT 与通用 dino.txt 对齐头存在兼容性混杂”这一解释边界。
