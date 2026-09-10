@@ -15,10 +15,11 @@ Gate S0、S1、S2、M4-A 和 M4-B 均已通过，但这些 Gate 证明的是短�
 跨 seed 方向，不是充分训练后的最终域结论。500 optimizer step 只消费 32,000 个样本，相当于当前
 36,495 条训练集的 0.877 轮。因此 M4 应定位为 **Web/SAT 短预算 matched pilot**。
 
-项目的研究主角仍是 SAT DINOv3：目标是利用 SkyScript 微调，让只有视觉预训练权重的 SAT backbone
-接入现有通用 dino.txt vision head/text encoder。Web 是天然兼容该对齐头的参照组和性能参考，不是
-替代 SAT 的后续研究主线。下一步进入第 8 节的 SAT-centric 微调研究，先把不同模块的作用与安全
-learning rate 搞清楚，再设计覆盖完整 epoch 的正式长训练。
+项目的研究主角仍是 SAT DINOv3：目标是在永久冻结 SAT backbone 的前提下，利用 SkyScript 微调
+其后的对齐模块和文本侧，使只有视觉预训练权重的 SAT backbone 接入现有通用 dino.txt vision
+head/text encoder。Web 是天然兼容该对齐头的参照组和性能参考，不是替代 SAT 的后续研究主线。
+下一步进入第 8 节的 SAT-centric 微调研究，先把不同模块的作用与安全 learning rate 搞清楚，再
+设计覆盖完整 epoch 的正式长训练。
 
 本轮同时冻结以下研究决策：
 
@@ -30,8 +31,9 @@ learning rate 搞清楚，再设计覆盖完整 epoch 的正式长训练。
 4. unique-caption 不只服务 negative queue。它已经减少当前 in-batch InfoNCE 的精确同文假负例，
    同时让未来 queue 更安全；但它并没有自动解决同义文本、近重复地点和 queue embedding 过时。
 5. queue 与“扩大可训练参数范围”是两个独立实验轴，不能在同一个 run 中同时打开。
-6. 其他官方模块的微调按 image side → text projection → text blocks 的顺序逐步增加，并先实现分组
-   learning rate；不能把当前 adapter 的 `1e-4` 直接施加到全部预训练模块。
+6. `visual_model.backbone` 在所有后续实验中永久冻结，这是不可突破的研究协议；可训练范围只允许
+   位于其后的 dino.txt 对齐头、adapter、文本 encoder/projection 和 `logit_scale`，并按模块使用
+   分组 learning rate，不能把当前 adapter 的 `1e-4` 直接施加到全部预训练模块。
 
 研究背景见[科研背景](../DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md)，稳定工程规则见
 [开发架构](DEVELOPMENT_ARCHITECTURE.md)。本文是当前状态、具体协议和下一步操作的唯一主文档。
@@ -459,9 +461,14 @@ outputs/skyscript_m4_rq1_m4_b_stage{100,250,500}/summary.json
 - 帮助判断 SAT 的问题来自训练器本身，还是来自 backbone/head 接口错配；
 - 在少数关键候选上做 matched control，而不是替代 SAT 主线或为每个开发尝试都重复三 seed。
 
-SAT 路径要回答的是：能否保留已经学到的遥感视觉表征，同时通过有限微调把它映射到通用 dino.txt
-文本空间。M4 已证明仅在最终2048维 image embedding后增加 adapter 可以部分做到，但仍留下明显
-绝对差距；因此下一步应优先改造 image side 的错配接口，而不是一开始就大幅改写文本编码器。
+SAT 路径要回答的是：在**始终冻结 SAT 视觉 backbone**、完整保留遥感视觉表征的前提下，能否微调
+其后的对齐层和文本侧，把它映射到通用 dino.txt 文本空间。M4 已证明仅在最终2048维 image
+embedding 后增加 adapter 可以部分做到，但仍留下明显绝对差距；下一步先分辨 dino.txt vision
+head 与 adapter 各自的作用，再逐步研究 text projection 和 text encoder。这里的 dino.txt vision
+head 虽然内部可以包含 transformer blocks，但它是附加在冻结 backbone 之后的对齐头，绝不能写成
+“SAT backbone block”或据此解冻 `visual_model.backbone`。这与
+[DINOv2 Meets Text](https://openaccess.thecvf.com/content/CVPR2025/html/Jose_DINOv2_Meets_Text_A_Unified_Framework_for_Image-_and_Pixel-Level_CVPR_2025_paper.html)
+冻结预训练视觉 backbone、训练其后新增对齐模块及文本侧的做法保持一致。
 
 ### 8.2 开跑前必须完成的优化器能力
 
@@ -473,35 +480,41 @@ SAT 路径要回答的是：能否保留已经学到的遥感视觉表征，同�
 | --- | --- | --- |
 | image adapter | 保留快速适配能力 | LR、weight decay、参数名/数量 |
 | dino.txt vision head | 修复 SAT backbone→对齐头接口 | 较低 LR、weight decay、参数名/数量 |
-| SAT backbone last-k blocks + final norm | 后续允许有限视觉表征适配 | last-k、LR、层身份、参数名/数量 |
 | text projection | 后续调整文本空间最终映射 | 独立 LR、参数名/数量 |
-| text last-k blocks + final norm | 最后才研究语言域适配 | last-k、LR、层身份、参数名/数量 |
+| text last-k blocks + final norm | 研究语言域适配 | last-k、LR、层身份、参数名/数量 |
 | logit scale | 只研究校准 | 独立 LR，默认无 weight decay |
 
 实现必须保证：参数组互斥且覆盖全部 trainable 参数；零参数的未启用组不能静默出现；每组初始 LR、
 当前 LR、weight decay、参数名和数量进入 provenance、checkpoint、训练日志和 verification；resume
-必须逐组严格恢复；scheduler 对各组保持固定 LR 比例。还需新增 `vision_last_k` 冻结配置，当前代码
-只有 `text_last_k`，尚不能安全研究 SAT backbone 顶层微调。
+必须逐组严格恢复；scheduler 对各组保持固定 LR 比例。
+
+同时新增不可关闭的视觉冻结断言，而不是新增任何 `vision_last_k` 配置：
+
+- `visual_model.backbone.*` 的 `requires_grad` 必须全部为 `False`；
+- optimizer parameter groups 不得包含该前缀下的任何参数；
+- 冻结 backbone 必须始终处于 eval mode，反向后其梯度必须全部为 `None`；
+- provenance、checkpoint 和 verification 必须记录并复核上述不变量；若违反则拒绝训练；
+- trainable-only checkpoint 不得包含该前缀下的权重。
 
 ### 8.3 微调机制 ladder
 
-所有候选都使用 SAT backbone、相同数据/split/loss/augmentation-off/queue-off，并从各自官方初始化
-重新开始。候选是累加关系，但 checkpoint 不能从上一个候选续跑：
+所有候选都使用永久冻结的 SAT backbone、相同数据/split/loss/augmentation-off/queue-off，并从
+同一官方初始化重新开始；checkpoint 不能从上一个候选续跑：
 
-| 阶段 | 相对上一步唯一新增项 | 要检验的机制 |
+| 阶段 | 可训练范围 | 要检验的机制 |
 | --- | --- | --- |
 | F0 | adapter only | M4 的最小可适配参照 |
-| F1 | + dino.txt vision head | 直接修复 SAT backbone 与通用视觉对齐头的接口 |
-| F2 | + SAT backbone 最后1个 block/final norm | 让高层遥感视觉特征有限地迁移到文本空间 |
-| F3 | 视 F2 结果扩到最后2个 visual blocks | 检验更多视觉容量，不能默认执行 |
-| F4 | + text projection | 在 image-side 方案稳定后允许最终文本映射轻量适配 |
-| F5 | + 最后1个 text block/final norm | 仅在 F4 仍受限时研究语言域适配 |
+| F1 | dino.txt vision head only | 判断官方对齐头本身能否适配冻结的 SAT 特征 |
+| F2 | adapter + dino.txt vision head | 检验两种 image-side 对齐能力是否互补 |
+| F3 | 胜出的 image-side 方案 + text projection | 允许文本空间最终映射轻量适配 |
+| F4 | F3 + 最后1个 text block/final norm | 研究有限文本 encoder 微调是否继续改善 |
+| F5 | 仅在 F4 有效后扩到最后2或4个 text blocks | 检验更多文本侧容量，不能默认执行 |
 | F6 | logit scale | 单独研究温度校准，不与新增表示层同时开启 |
 
-优先级是 F1→F2，而不是先动文本层。原因是现有 dino.txt 权重包含为 Web backbone 学到的 vision
-head，SAT 替换发生在它的上游；M4 的极低 step0 正是接口不兼容的直接信号。text projection/text
-blocks 仍值得研究，但它们承担的是第二阶段任务，并且需要额外报告冻结参考模型上的 text embedding
-cosine drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为一谈。
+这里的编号表示机制候选，不表示必须全部依次执行。F1 与 F2 首先分辨现有 dino.txt vision head、
+adapter 及二者组合的作用；之后可以训练 text projection 和有限数量的 text blocks，但无论结果如何都
+不能把解冻视觉 backbone 当作候选。文本侧实验还需报告相对冻结参考模型的 text embedding cosine
+drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为一谈。
 
 ### 8.4 先搞明白微调，再做长训练
 
@@ -509,12 +522,13 @@ cosine drift，避免把“适配遥感文本”与“遗忘通用文本空间�
 
 1. 新建与 F0 完全 matched 的570-step配置；570 step恰好完成一次 sampler epoch（36,480次曝光，
    仅固定 drop-last 15条），避免500 step在首轮中途结束；
-2. F1 只增加 vision head，adapter LR 保持 `1e-4`，vision-head LR 只预注册两个低量级候选
-   `1e-5` 与 `5e-6`，不做连续试参；
+2. F1 只训练 vision head；F2 同时训练 adapter 与 vision head。vision-head LR 只预注册两个低量级
+   候选 `1e-5` 与 `5e-6`，F2 的 adapter LR 保持 `1e-4`，不做连续试参；
 3. 在 step0/100/250/570 评估 validation、SkyScript 和 RSICD 双向 retrieval，并记录各参数组梯度范数；
-4. F1 的主判断不是“相对自身极低 SAT step0 是否上涨”，而是同 step 是否超过 matched F0；
-5. 只有至少一个 F1 候选在 SkyScript、validation 和 RSICD 绝对值上形成一致且无明显退化的信号，
-   才实现并筛查 F2；若两个 LR 都失败，先诊断接口/归一化和梯度，不直接解冻文本层；
+4. F1/F2 的主判断不是“相对自身极低 SAT step0 是否上涨”，而是同 step 是否超过 matched F0，
+   同时比较 F1 与 F2 以判断 adapter 是否仍有独立价值；
+5. 若 image-side 候选失败，先诊断接口、归一化、梯度和参数组，不得解冻视觉 backbone；是否进入
+   text projection/text encoder 候选应依据预注册规则和诊断结果，而不是把视觉解冻作为补救；
 6. mechanism screen 使用同一个 seed 只负责方向和稳定性检查，不产生最终论文性能结论。
 
 建议的选择规则需在代码配置前进一步固化：SkyScript mean recall 为主要指标；validation loss、
@@ -575,7 +589,9 @@ multi-positive 语义。
 - 不把500 optimizer step写成完整一轮或充分训练后的正式结果；
 - 不因为 Web 在通用 dino.txt 头下绝对值更高，就把研究主线从 SAT 偷换为 Web；
 - 不只以“相对 SAT 极低 step0 有提升”作为新增微调模块成功的证据，必须与 matched F0 比较；
-- 不在没有独立参数组和 LR 的情况下直接解冻 vision/text 预训练模块；
+- 任何时候都不解冻 `visual_model.backbone`，不允许它进入 optimizer 或 trainable-only checkpoint；
+- 不把 dino.txt vision head 内的 transformer blocks 称为 SAT backbone blocks；
+- 不在没有独立参数组和 LR 的情况下直接解冻 dino.txt 对齐头或 text 预训练模块；
 - 不删除 step0、中间 stage、best、provenance、resume history 或失败报告；
 - 不因 M4 短预算 Gate 通过就宣称充分训练的 RQ1、M5、RQ2、RQ3 或跨数据源全面泛化已经完成。
 
@@ -630,15 +646,16 @@ python -m compileall -q src tools
 
 1. 把 M4 定位为 adapter-only、0.877 epoch 的三 seed 短预算机制证据，不写成充分训练的最终实验。
 2. 后续研究主线固定 SAT backbone；Web 只保留为通用 dino.txt 天然兼容参照。
-3. 先实现第8.2节的显式 optimizer parameter groups、独立 LR、`vision_last_k` 和完整
-   provenance/checkpoint/resume 核验，不立即提交大型 GPU 训练。
-4. 冻结 F0/F1 的570-step matched配置和比较 Gate；F1 只解冻 vision head，预注册 `1e-5`、`5e-6`
-   两个 head LR，adapter 保持 `1e-4`。
-5. 完成 seed11 F0/F1 mechanism screen 后再决定是否进入 F2；这一步不同时改变 queue、augmentation、
-   文本形式、数据集或训练 seed。
+3. 先实现第8.2节的显式 optimizer parameter groups、独立 LR、视觉 backbone 永久冻结断言和完整
+   provenance/checkpoint/resume 核验，不立即提交大型 GPU 训练；不得实现 `vision_last_k`。
+4. 冻结 F0/F1/F2 的570-step matched配置和比较 Gate：F0 为 adapter only，F1 为 vision head only，
+   F2 为 adapter + vision head；vision-head LR 预注册 `1e-5`、`5e-6`，adapter LR 保持 `1e-4`。
+5. 完成 seed11 F0/F1/F2 mechanism screen 后，再按结果研究 text projection 和有限 text blocks；这一步
+   不同时改变 queue、augmentation、文本形式、数据集或训练 seed，视觉 backbone 始终冻结。
 6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
    step须提前冻结，不能根据单个 seed 的结果选择性续跑。
 
-当前核心假设是：SAT backbone 已包含有价值的遥感视觉表征，主要障碍是它与通用 dino.txt 对齐头
-不兼容。下一步不是放弃 SAT，而是依次检验 vision head、SAT 高层视觉块和少量文本映射的可控微调，
-把“能涨点”的 M4 现象推进为可解释、充分训练且可复现的 SAT 图文对齐方法。
+当前核心假设是：SAT backbone 已包含有价值且不应被训练破坏的遥感视觉表征，主要障碍是它与通用
+dino.txt 对齐头不兼容。下一步不是放弃或微调 SAT backbone，而是在其永久冻结的前提下，依次检验
+vision head、adapter、text projection 和少量 text blocks 的可控微调，把“能涨点”的 M4 现象推进
+为可解释、充分训练且可复现的 SAT 图文对齐方法。
