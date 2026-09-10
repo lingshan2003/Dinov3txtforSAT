@@ -1,4 +1,4 @@
-# 最新交接：M4 / RQ1 正式完成，进入可训练容量 ladder
+# 最新交接：M4 短预算机制证据完成，进入 SAT-centric 微调研究
 
 更新时间：2026-09-10
 
@@ -8,15 +8,21 @@
 
 > SkyScript images2+images3 unique-caption 数据、`title_raw` 文本、冻结官方 dino.txt、仅训练
 > 2048→256→2048 image embedding residual adapter，在 Web DINOv3 ViT-L/16 上能够跨
-> seed 稳定改善同源全局图文检索，并在 500-step 日程中持续改善而不发生历史路线的长训练反转。
+> seed 稳定改善同源全局图文检索，并在不足一轮数据的 500-step 短日程中持续改善而不发生历史路线
+> 的短程反转。
 
-Gate S0、S1、S2、M4-A 和 M4-B 均已通过。**M4 / RQ1 的 Web–SAT 三 seed 严格对照已经
-正式完成**。下一步固定绝对性能更好的 Web 路径，进入第 8 节的可训练容量 ladder；先实现可核验的
-独立 learning-rate 参数组，再执行 E1（adapter + vision head）。
+Gate S0、S1、S2、M4-A 和 M4-B 均已通过，但这些 Gate 证明的是短预算下的工程正确性、可适配性和
+跨 seed 方向，不是充分训练后的最终域结论。500 optimizer step 只消费 32,000 个样本，相当于当前
+36,495 条训练集的 0.877 轮。因此 M4 应定位为 **Web/SAT 短预算 matched pilot**。
+
+项目的研究主角仍是 SAT DINOv3：目标是利用 SkyScript 微调，让只有视觉预训练权重的 SAT backbone
+接入现有通用 dino.txt vision head/text encoder。Web 是天然兼容该对齐头的参照组和性能参考，不是
+替代 SAT 的后续研究主线。下一步进入第 8 节的 SAT-centric 微调研究，先把不同模块的作用与安全
+learning rate 搞清楚，再设计覆盖完整 epoch 的正式长训练。
 
 本轮同时冻结以下研究决策：
 
-1. 当前正式训练数据使用完整的 36,495 条 train，不再为了沿用旧的“10k / 50k”命名而人为切出
+1. 当前固定训练数据使用完整的 36,495 条 train，不再为了沿用旧的“10k / 50k”命名而人为切出
    10k 主实验。
 2. 当前不单列紧接着必须完成的 scale 阶段。规模研究推迟到扩展更多分片、恢复多图同语义关系，
    或建立 multi-positive/false-negative 处理后再做。
@@ -115,9 +121,9 @@ S1 和 S2 都显示 RSICD 方向不对称：
 全面提高”或“跨数据源泛化已经解决”。后续继续报告两个方向的全部 R@1/R@5/R@10、median rank
 和 mean rank，但不根据已经观察到的 RSICD-val 结果事后修改主门槛。
 
-### 2.5 M4-A：Web–SAT matched seed11 pilot 通过
+### 2.5 M4-A：Web–SAT matched seed11 短预算 pilot 通过
 
-正式对照报告：
+M4-A 归档报告：
 
 ```text
 outputs/skyscript_m4_rq1_seed11/summary.json
@@ -146,9 +152,9 @@ validation loss 同样显示持续适配：Web 从 1.5994003 降至 0.7617921，
   backbone 的视觉表征质量。
 - seed11 只是 pilot。任何稳定性或 RQ1 总结必须等待 M4-B 的 matched 三 seed 结果。
 
-### 2.6 M4-B：Web–SAT matched 三 seed 正式对照通过
+### 2.6 M4-B：Web–SAT matched 三 seed 短预算对照通过
 
-正式 step500 跨种子报告：
+M4-B step500 归档报告：
 
 ```text
 outputs/skyscript_m4_rq1_m4_b_stage500/summary.json
@@ -175,11 +181,14 @@ sample standard deviation（ddof=1），SAT−Web 为同 seed 配对差异后再
 - 两域 validation loss 都稳定下降且 step500 为 best；SAT 的更大下降反映严重初始错配被部分
   修复，不能解读成最终模型更好。
 
-RQ1 正式结论：在“冻结通用 dino.txt 对齐头 + 仅训练相同 image adapter”的协议下，Web DINOv3
-初始化提供显著且跨 seed 稳定的更高绝对图文检索性能。SAT DINOv3 表现出更大的可适配增量，但
-500 step 后仍无法弥合与通用对齐头的表示兼容性差距。因此后续主线选择 Web backbone。该结论只
-适用于当前对齐头迁移协议，不能外推为 SAT backbone 的纯视觉表征质量劣于 Web backbone；n=3 的
-均值与 sample std 是预注册重复实验的描述性证据，不作为大样本显著性检验。
+M4 短预算结论：在“冻结通用 dino.txt 对齐头 + 仅训练相同 image adapter”的协议下，Web DINOv3
+初始化在500 step时提供跨 seed 稳定的更高绝对图文检索性能；SAT DINOv3 则表现出更大的同域增量，
+证明通用对齐能力可以通过微调迁移到 SAT 路径，但单个输出 adapter 尚不足以弥合初始化错配。
+
+这不是“SAT 应被 Web 替代”的结论。恰恰相反，它给出了继续研究 SAT 的依据：SAT 路径不是不可训练，
+瓶颈更可能位于 SAT backbone 与通用 dino.txt vision head 的接口，以及被冻结的对齐模块容量。后续
+主线应以 SAT 为研究对象，Web 仅作为天然兼容对照。该结论不能外推为 SAT backbone 的纯视觉表征
+质量劣于 Web backbone；n=3 的均值与 sample std 只是短预算重复实验的描述性证据。
 
 ## 3. 证据身份与核验范围
 
@@ -236,7 +245,11 @@ M4 前置任务，未来 RQ2 若执行，必须使用完全相同图片与 split
 ### 4.2 为什么当前不再单独切 scale
 
 当前 500 optimizer steps、physical batch16、gradient accumulation4 共消费 32,000 个样本，约为
-36,495 条 train 的 87.7%，还不到完整一轮数据。此时把 train 人为缩为 10k 会带来两种混杂：
+36,495 条 train 的 87.7%，还不到完整一轮数据。sampler 每轮有 `floor(36,495/16)=2,280` 个
+physical batch，4 次累积更新一次，所以一轮恰好对应 570 optimizer step；每轮末尾因 `drop_last`
+固定丢弃15条。M4 的500 step属于短预算机制筛查，不能称为充分利用完整训练集的正式长训练。
+
+此时把 train 人为缩为 10k 会带来两种混杂：
 
 - 固定 steps 时，10k 数据会被重复看更多轮；
 - 固定 epochs 时，优化步数和 scheduler 预算又不同。
@@ -247,7 +260,8 @@ images2+images3 只有 40,550 个唯一 caption-image pair；完整 polished CSV
 
 因此具体里程碑调整为：
 
-- M4 使用固定 36,495/4,055 协议完成视觉域对照；
+- M4 使用固定 36,495/4,055 协议完成短预算视觉域对照和可适配性判断；
+- 模块范围确定后的正式实验改用 epoch-aligned 预算，至少覆盖完整数据轮次；
 - 原 M5 scale 暂停，不删除架构中的抽象研究问题；
 - 只有扩展更多分片，或利用 multi-positive 正确恢复“同 caption 多图片”后，才重新设计嵌套规模实验；
 - 如果未来确实研究 data efficiency，必须提前冻结“固定样本曝光、固定 steps 或固定 epochs”中的一种
@@ -291,7 +305,7 @@ adapter 只处理全局 image embedding，不处理 patch tokens，因此不能�
 
 | 项目 | 设置 |
 | --- | --- |
-| seed | 11（S2）；跨 seed 100-step 证据为 11/23/47 |
+| seed | M4 的 Web/SAT 500-step 对照均为 11/23/47 |
 | physical batch | 16 |
 | gradient accumulation | 4 |
 | optimizer effective samples/step | 64 |
@@ -302,13 +316,15 @@ adapter 只处理全局 image embedding，不处理 patch tokens，因此不能�
 | weight decay | 0.01 |
 | max grad norm | 1.0 |
 | total steps | 500 |
+| 等效训练轮数 | 0.877 epoch（32,000 / 36,495） |
 | warmup | 50 |
 | scheduler | linear warmup + cosine decay |
 | validation/checkpoint | 每 50 step |
 | augmentation | 关闭 |
 | negative queue | 关闭 |
 
-梯度累积不会把对比候选从 16 扩为 64；它只扩大一次 optimizer update 消费的样本数。
+梯度累积不会把对比候选从16扩为64；它只扩大一次 optimizer update 消费的样本数。后续“完整一轮”
+应写成570 optimizer step，而不是沿用500这个便于 staged 检查的整数。
 
 ## 6. unique-caption 与 negative queue 的关系
 
@@ -354,7 +370,7 @@ unique-caption 是安全使用 queue 的重要准备，但不是充分条件。
 queue 只有在自己的同源 retrieval 改善且外部保持不恶化时才接受。失败也要保留，因为它能说明
 “唯一 caption 足以清除精确冲突，但不足以保证大负样本集合安全”。
 
-## 7. 当前步骤：M4 / RQ1 Web–SAT 严格对照
+## 7. 已完成阶段：M4 Web–SAT 短预算严格对照
 
 ### 7.1 要回答的问题
 
@@ -404,8 +420,9 @@ Web 对照直接使用已经通过的 S2 run。新增 SAT 配置只允许改变�
 
 ### 7.3 M4-B：跨 seed 的 RQ1 证据
 
-状态：已完成并通过。六个 domain×seed run 均通过 stage100、250、500；正式结果和解释见
-2.6 节。RQ1 到此结束，不继续追加 seed 或事后更改 Gate。
+状态：已完成并通过。六个 domain×seed run 均通过 stage100、250、500；结果和解释见2.6节。
+M4 到此停止追加 seed 或事后更改 Gate，但完整 RQ1 尚未结束：当前只回答 adapter-only、0.877 epoch
+下的可适配性和方向，下一阶段需要在 SAT 路径上研究更合理的微调范围并进行 epoch-aligned 训练。
 
 M4-A 是 matched-seed pilot，不足以单独完成视觉域结论。预先规定下一层复现：
 
@@ -416,12 +433,12 @@ M4-A 是 matched-seed pilot，不足以单独完成视觉域结论。预先规�
 4. 两域三个 seed 均通过 stage100 后，再按相同规则扩展到 250/500；
 5. 最终按 domain 报告逐 seed、mean、sample std 和 Web–SAT difference，不只报告最好 checkpoint。
 
-只有 M4-B 给出匹配的跨 seed 证据后，才能对 RQ1 做稳定性结论。资源不足时，可以把 M4-A 写成
-pilot，并明确 M4-B 未完成，而不能把单 seed 写成正式域优劣。
+M4-B 允许对“500-step adapter-only 现象”做跨 seed 稳定性结论，但不能把这个有限结论升级为
+充分训练后的最终域优劣。
 
 ### 7.4 M4 归档身份
 
-M4 已完成，以下产物只读保留，不作为后续实验的可续跑目录：
+M4 短预算对照已完成，以下产物只读保留，不作为后续实验的可续跑目录：
 
 ```text
 configs/skyscript_sat_adapter_500step_seed11.toml
@@ -432,34 +449,94 @@ outputs/skyscript_gate_m4_b_{web,sat}_seed{23,47}/
 outputs/skyscript_m4_rq1_m4_b_stage{100,250,500}/summary.json
 ```
 
-## 8. M4 之后：逐步扩大可训练范围
+## 8. 下一阶段：SAT backbone 如何接入通用 dino.txt
 
-当前代码已经支持 `train_vision_head`、`train_text_projection`、`text_last_k` 和
-`train_logit_scale`，但 optimizer 只有一个全局 learning rate。直接打开这些开关会把 adapter 的
-`1e-4` 同时施加到预训练官方模块，无法区分“模块无效”和“LR 过大”。
+### 8.1 研究目标与角色
 
-因此先增加显式 parameter groups，并把每组 LR、参数名、数量写入 provenance/checkpoint 核验。
-然后在选定 backbone 上按以下 ladder 单变量推进：
+后续主角固定为 SAT DINOv3 backbone。Web backbone 的作用是：
 
-| 阶段 | 相对上一步唯一新增项 | 目的 |
+- 提供通用 dino.txt 对齐头天然兼容时的参考上界；
+- 帮助判断 SAT 的问题来自训练器本身，还是来自 backbone/head 接口错配；
+- 在少数关键候选上做 matched control，而不是替代 SAT 主线或为每个开发尝试都重复三 seed。
+
+SAT 路径要回答的是：能否保留已经学到的遥感视觉表征，同时通过有限微调把它映射到通用 dino.txt
+文本空间。M4 已证明仅在最终2048维 image embedding后增加 adapter 可以部分做到，但仍留下明显
+绝对差距；因此下一步应优先改造 image side 的错配接口，而不是一开始就大幅改写文本编码器。
+
+### 8.2 开跑前必须完成的优化器能力
+
+当前代码虽然能解冻 `vision_head`、`text_projection`、最后若干 text block 和 `logit_scale`，AdamW
+仍只有一个全局 LR。直接打开开关会把 adapter 的 `1e-4` 施加到所有预训练模块，实验无法区分
+“模块没有帮助”和“学习率过大导致破坏”。第一项代码任务是实现显式 parameter groups：
+
+| 参数组 | 初始用途 | 必须独立配置/记录 |
 | --- | --- | --- |
-| E0 | adapter only（当前 baseline） | 最小稳定参照 |
-| E1 | + vision head，使用较低独立 LR | 增加 image-side 对齐能力 |
-| E2 | + text projection，使用较低独立 LR | 允许最终文本映射适配 |
-| E3 | + 最后 1 个 text block 与 final norm | 测试轻量语言域适配 |
-| E4 | last 2/4 text blocks，仅在 E3 通过后 | 测试更大语言容量 |
-| E5 | logit scale 单独解冻 | 研究校准，不让它掩盖表示质量 |
+| image adapter | 保留快速适配能力 | LR、weight decay、参数名/数量 |
+| dino.txt vision head | 修复 SAT backbone→对齐头接口 | 较低 LR、weight decay、参数名/数量 |
+| SAT backbone last-k blocks + final norm | 后续允许有限视觉表征适配 | last-k、LR、层身份、参数名/数量 |
+| text projection | 后续调整文本空间最终映射 | 独立 LR、参数名/数量 |
+| text last-k blocks + final norm | 最后才研究语言域适配 | last-k、LR、层身份、参数名/数量 |
+| logit scale | 只研究校准 | 独立 LR，默认无 weight decay |
 
-规则：
+实现必须保证：参数组互斥且覆盖全部 trainable 参数；零参数的未启用组不能静默出现；每组初始 LR、
+当前 LR、weight decay、参数名和数量进入 provenance、checkpoint、训练日志和 verification；resume
+必须逐组严格恢复；scheduler 对各组保持固定 LR 比例。还需新增 `vision_last_k` 冻结配置，当前代码
+只有 `text_last_k`，尚不能安全研究 SAT backbone 顶层微调。
 
-- 每个候选都从官方初始化开始，不从前一个 ladder checkpoint 接着训练；
-- 先 seed11 stage100 筛查，再逐段到 250/500；最终候选再做 seed23/47；
-- 每次只增加一个可训练组件，queue 和 augmentation 保持关闭；
-- image backbone blocks 当前没有细粒度解冻配置，不在没有明确 last-k、LR group 和保存测试前解冻；
-- 若某一步外部保持失败，优先研究表示 anchoring/distillation，而不是继续增加层数赌恢复。
+### 8.3 微调机制 ladder
 
-这个 ladder 回答“额外容量是否带来可复现收益”，不能与 Web/SAT 对照或 queue 实验混在同一个表里
-当作单因素结论。
+所有候选都使用 SAT backbone、相同数据/split/loss/augmentation-off/queue-off，并从各自官方初始化
+重新开始。候选是累加关系，但 checkpoint 不能从上一个候选续跑：
+
+| 阶段 | 相对上一步唯一新增项 | 要检验的机制 |
+| --- | --- | --- |
+| F0 | adapter only | M4 的最小可适配参照 |
+| F1 | + dino.txt vision head | 直接修复 SAT backbone 与通用视觉对齐头的接口 |
+| F2 | + SAT backbone 最后1个 block/final norm | 让高层遥感视觉特征有限地迁移到文本空间 |
+| F3 | 视 F2 结果扩到最后2个 visual blocks | 检验更多视觉容量，不能默认执行 |
+| F4 | + text projection | 在 image-side 方案稳定后允许最终文本映射轻量适配 |
+| F5 | + 最后1个 text block/final norm | 仅在 F4 仍受限时研究语言域适配 |
+| F6 | logit scale | 单独研究温度校准，不与新增表示层同时开启 |
+
+优先级是 F1→F2，而不是先动文本层。原因是现有 dino.txt 权重包含为 Web backbone 学到的 vision
+head，SAT 替换发生在它的上游；M4 的极低 step0 正是接口不兼容的直接信号。text projection/text
+blocks 仍值得研究，但它们承担的是第二阶段任务，并且需要额外报告冻结参考模型上的 text embedding
+cosine drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为一谈。
+
+### 8.4 先搞明白微调，再做长训练
+
+第一轮不是大型正式训练，而是 seed11 的 mechanism screen：
+
+1. 新建与 F0 完全 matched 的570-step配置；570 step恰好完成一次 sampler epoch（36,480次曝光，
+   仅固定 drop-last 15条），避免500 step在首轮中途结束；
+2. F1 只增加 vision head，adapter LR 保持 `1e-4`，vision-head LR 只预注册两个低量级候选
+   `1e-5` 与 `5e-6`，不做连续试参；
+3. 在 step0/100/250/570 评估 validation、SkyScript 和 RSICD 双向 retrieval，并记录各参数组梯度范数；
+4. F1 的主判断不是“相对自身极低 SAT step0 是否上涨”，而是同 step 是否超过 matched F0；
+5. 只有至少一个 F1 候选在 SkyScript、validation 和 RSICD 绝对值上形成一致且无明显退化的信号，
+   才实现并筛查 F2；若两个 LR 都失败，先诊断接口/归一化和梯度，不直接解冻文本层；
+6. mechanism screen 使用同一个 seed 只负责方向和稳定性检查，不产生最终论文性能结论。
+
+建议的选择规则需在代码配置前进一步固化：SkyScript mean recall 为主要指标；validation loss、
+双向 rank/recall 和 RSICD 为约束；不得只按最好 checkpoint 或单方向 R@K 选择。SAT 的 official
+RSICD 起点接近零，旧的“相对 official 不下降0.01”门槛在这一阶段过于宽松，F1/F2 应直接与 matched
+F0 的同 step 绝对结果比较。
+
+### 8.5 正式长训练的预算定义
+
+只有微调范围和 LR 选择完成后才冻结正式实验。正式预算不再用任意整数500表达，而使用完整 epoch：
+
+- 1 epoch = 2,280 physical batches = 570 optimizer steps = 36,480 次样本曝光；
+- 候选正式比较建议先预注册3 epochs，即1,710 optimizer steps；
+- checkpoint/retrieval 至少在570、1,140、1,710 step执行，观察是否仍改善或开始过拟合；
+- F0 与胜出的微调候选必须使用相同 total steps、warmup 语义和 seed11/23/47，从头训练；
+- 如果3 epochs时 validation 与 retrieval 仍一致改善，再在看见结果前预注册是否延长到5 epochs
+  （2,850 step），不能只延长表现最好的单个 seed；
+- physical InfoNCE candidates 仍是16。增大候选集合/queue 是另一个实验轴，不能在微调范围研究中
+  同时改变。
+
+这套顺序把两个问题分开：短 screen 回答“应该微调哪些模块、用什么量级的 LR”，epoch-aligned
+三 seed实验才回答“选定 SAT 微调方案在充分数据曝光下是否稳定优于 adapter-only”。
 
 ## 9. 可选研究分支
 
@@ -495,8 +572,12 @@ multi-positive 语义。
 - 不直接恢复 4096 queue；
 - 不把 gradient accumulation=4 写成 64 个对比候选；
 - 不把当前 36,495 样本称为已经完成 scale study；
+- 不把500 optimizer step写成完整一轮或充分训练后的正式结果；
+- 不因为 Web 在通用 dino.txt 头下绝对值更高，就把研究主线从 SAT 偷换为 Web；
+- 不只以“相对 SAT 极低 step0 有提升”作为新增微调模块成功的证据，必须与 matched F0 比较；
+- 不在没有独立参数组和 LR 的情况下直接解冻 vision/text 预训练模块；
 - 不删除 step0、中间 stage、best、provenance、resume history 或失败报告；
-- 不因 S2 通过就宣称 M4、M5、RQ2、RQ3 或跨数据源全面泛化已经完成。
+- 不因 M4 短预算 Gate 通过就宣称充分训练的 RQ1、M5、RQ2、RQ3 或跨数据源全面泛化已经完成。
 
 ## 11. 路径与资产
 
@@ -525,7 +606,8 @@ multi-positive 语义。
 
 | 任务 | 入口 |
 | --- | --- |
-| 当前 Web S2 配置 | `configs/skyscript_web_adapter_500step_seed11.toml` |
+| M4 SAT 短预算配置 | `configs/skyscript_sat_adapter_500step_seed11.toml` |
+| M4 Web 对照配置 | `configs/skyscript_web_adapter_500step_seed11.toml` |
 | 训练 | `src/dinotxt_rs/cli/train.py` |
 | adapter 与冻结 | `src/dinotxt_rs/models/embedding_adapter.py`、`official_dinotxt.py` |
 | loss 与 queue | `src/dinotxt_rs/losses/contrastive.py` |
@@ -546,14 +628,17 @@ python -m compileall -q src tools
 
 ## 12. 下一会话接手清单
 
-1. M4 / RQ1 已完成，不重跑 Web–SAT，也不根据结果追加有利 seed。
-2. 后续主线固定 Web backbone、当前 SkyScript 数据和 E0 adapter-only 基线；不同时混入 queue、
-   augmentation、文本模板或数据规模变化。
-3. 先为 adapter、vision head、text projection、text blocks 和 logit scale 实现显式 optimizer
-   parameter groups、独立 LR 配置和完整 provenance/checkpoint 核验。
-4. 第一项新实验只做 E1：相对 E0 唯一新增 vision head，并使用低于 adapter `1e-4` 的独立 LR。
-5. E1 仍从官方初始化开始，先 seed11 运行预注册短阶段 Gate；只有确认工程与方向成立后才扩展日程和
-   seed，不能复用历史 ChatEarthNet/queue/full-scope 开发 run 作为正式证据。
+1. 把 M4 定位为 adapter-only、0.877 epoch 的三 seed 短预算机制证据，不写成充分训练的最终实验。
+2. 后续研究主线固定 SAT backbone；Web 只保留为通用 dino.txt 天然兼容参照。
+3. 先实现第8.2节的显式 optimizer parameter groups、独立 LR、`vision_last_k` 和完整
+   provenance/checkpoint/resume 核验，不立即提交大型 GPU 训练。
+4. 冻结 F0/F1 的570-step matched配置和比较 Gate；F1 只解冻 vision head，预注册 `1e-5`、`5e-6`
+   两个 head LR，adapter 保持 `1e-4`。
+5. 完成 seed11 F0/F1 mechanism screen 后再决定是否进入 F2；这一步不同时改变 queue、augmentation、
+   文本形式、数据集或训练 seed。
+6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
+   step须提前冻结，不能根据单个 seed 的结果选择性续跑。
 
-M4 的目标已经实现：获得了身份严格、可解释且跨 seed 一致的视觉域对照。后续实验以 Web 路径为
-固定基线，但必须保留“SAT 与通用 dino.txt 对齐头存在兼容性混杂”这一解释边界。
+当前核心假设是：SAT backbone 已包含有价值的遥感视觉表征，主要障碍是它与通用 dino.txt 对齐头
+不兼容。下一步不是放弃 SAT，而是依次检验 vision head、SAT 高层视觉块和少量文本映射的可控微调，
+把“能涨点”的 M4 现象推进为可解释、充分训练且可复现的 SAT 图文对齐方法。
