@@ -1,6 +1,6 @@
-# 最新交接：冻结稳定基线并进入 M4 视觉域对照
+# 最新交接：M4-A 单种子试验完成，进入 M4-B 跨种子对照
 
-更新时间：2026-09-09
+更新时间：2026-09-10
 
 ## 1. 一页结论
 
@@ -10,7 +10,8 @@
 > 2048→256→2048 image embedding residual adapter，在 Web DINOv3 ViT-L/16 上能够跨
 > seed 稳定改善同源全局图文检索，并在 500-step 日程中持续改善而不发生历史路线的长训练反转。
 
-Gate S0、S1、S2 已全部通过。下一步直接进入 **M4 / RQ1：Web 与 SAT 视觉初始化的严格对照**。
+Gate S0、S1、S2 和 M4-A 均已通过。下一步是 **M4-B：Web 与 SAT 的 seed11/23/47
+严格跨种子对照**，先完成全部新增 run 的 stage100，不能提前只延长其中一部分。
 
 本轮同时冻结以下研究决策：
 
@@ -113,6 +114,37 @@ S1 和 S2 都显示 RSICD 方向不对称：
 全面提高”或“跨数据源泛化已经解决”。后续继续报告两个方向的全部 R@1/R@5/R@10、median rank
 和 mean rank，但不根据已经观察到的 RSICD-val 结果事后修改主门槛。
 
+### 2.5 M4-A：Web–SAT matched seed11 pilot 通过
+
+正式对照报告：
+
+```text
+outputs/skyscript_m4_rq1_seed11/summary.json
+```
+
+报告状态为 `pass`，Web/SAT 配置差异、模型与预处理域、权重 hash、manifest、训练报告和每个
+checkpoint 的身份均已核验。SAT run 在 step100、250、500 的预设 Gate 全部通过。
+
+| 数据集 | 指标 | Web step0/official | Web step500 | Web delta | SAT step0/official | SAT step500 | SAT delta | SAT−Web step500 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| SkyScript-val | mean recall | 0.0862721 | 0.1375668 | +0.0512947 | 0.0011097 | 0.0659679 | +0.0648582 | -0.0715988 |
+| RSICD-val | mean recall | 0.1587751 | 0.1542962 | -0.0044790 | 0.0046313 | 0.0642901 | +0.0596587 | -0.0900061 |
+
+validation loss 同样显示持续适配：Web 从 1.5994003 降至 0.7617921，SAT 从 3.8645770 降至
+1.1673670，二者的 best 都是 step500。
+
+允许的结论：
+
+- SAT backbone 与通用 dino.txt 对齐头在初始化时存在严重表示错配；两个数据集的绝对检索能力都
+  远低于 Web 路径。
+- adapter 能够持续、显著地修复 SAT 路径；到 step500，SAT 在 SkyScript 与 RSICD 上相对自身
+  初始化的 mean-recall 增量均大于 Web 路径。
+- 这种较大的增量主要来自更低的起点。适配后的 SAT 绝对性能仍明显落后 Web，因此 M4-A 不支持
+  “SAT 视觉初始化优于 Web”的结论。
+- 该结果研究的是“通用 dino.txt 对齐头迁移到不同视觉初始化后的适配行为”，不是纯粹比较两个
+  backbone 的视觉表征质量。
+- seed11 只是 pilot。任何稳定性或 RQ1 总结必须等待 M4-B 的 matched 三 seed 结果。
+
 ## 3. 证据身份与核验范围
 
 | 范围 | 身份 |
@@ -121,9 +153,13 @@ S1 和 S2 都显示 RSICD 方向不对称：
 | Gate S0 代码 | `9202423` |
 | seed23/47 与 Gate S1 | `bda81a2d27c0ded8529937c80d02ecbfccdcb6ae` |
 | Gate S2 训练与编排 | `78930a4ff820ccc7afcda4ed79e2bd0f456875d6` |
+| M4-A SAT 初始训练 | `864b61de0910f159d7e29567928e19bc8a928254` |
+| M4-A SAT 后续恢复 | `e862995556d3a5deb048b100df362d04ff35af1e` |
 | DINOv3 上游 | `6876159a11b4df116f30f667f8c9888617df0751` |
 | S1 summary SHA-256 | `e306ee2a4404b3e371fac9ab9e63d302514c34bc21ed46e01e45f658eb18c1cf` |
 | S2 summary SHA-256 | `3620403b3653c8955177e612e8da0d23d766fe369187f2fb367b4d32f071ebca` |
+| M4-A SAT summary SHA-256 | `7723b4cd6a4851e2c766ebd18aae0a97102b5cfee37f465df2d9309ddf55f2be` |
+| M4-A Web–SAT summary SHA-256 | `69bef90195afca5d19bd79a110f2261c0ece9a281fe6b71672aaa3d93ffaa9dc` |
 
 本次读取的是用户从服务器下载的 S2 `summary.json` 副本。没有直接登录服务器逐个读取子报告；
 服务器中的训练目录、stage summary、preflight、parity、overlap、逐 checkpoint retrieval 和 resume
@@ -279,7 +315,7 @@ unique-caption 是安全使用 queue 的重要准备，但不是充分条件。
 queue 只有在自己的同源 retrieval 改善且外部保持不恶化时才接受。失败也要保留，因为它能说明
 “唯一 caption 足以清除精确冲突，但不足以保证大负样本集合安全”。
 
-## 7. 下一步：M4 / RQ1 Web–SAT 严格对照
+## 7. 当前步骤：M4 / RQ1 Web–SAT 严格对照
 
 ### 7.1 要回答的问题
 
@@ -296,6 +332,8 @@ SAT-dino.txt，存在表示兼容性混杂。结果应解释为“通用对齐�
 不能简化为纯视觉预训练域优劣。
 
 ### 7.2 M4-A：matched seed11 staged pilot
+
+状态：已完成并通过。结果和解释见 2.5 节。
 
 Web 对照直接使用已经通过的 S2 run。新增 SAT 配置只允许改变：
 
@@ -326,6 +364,10 @@ Web 对照直接使用已经通过的 S2 run。新增 SAT 配置只允许改变�
 初始化绝对值低，就降低其保持门槛或更换外部集。
 
 ### 7.3 M4-B：跨 seed 的 RQ1 证据
+
+状态：即将执行。seed23/47 的 Web/SAT 配置与通用 staged runner 已准备。默认使用一键完整编排：
+它先运行四个新增 run 到 stage100 并与 seed11 统一汇总，全部通过后自动以同样方式进入
+stage250、stage500，不需要人工分三次续跑，也不会越过失败的全矩阵 Gate。
 
 M4-A 是 matched-seed pilot，不足以单独完成视觉域结论。预先规定下一层复现：
 
@@ -475,13 +517,14 @@ python -m compileall -q src tools
 
 ## 12. 下一会话接手清单
 
-1. 先读本文第 7 节，不重启 S0/S1/S2，也不先做 queue。
-2. 核对 `git status`、当前 HEAD、S2 summary 和 SAT 权重 hash。
-3. 创建 SAT seed11 500-step 配置，只改变第 7.2 节允许的字段。
-4. 为 Web/SAT 配置差异、SAT step0 parity 和 staged resume 增加测试。
-5. 实现 M4-A staged 脚本与 Web/SAT 汇总工具。
-6. 先运行 SAT 0→100；只有 Gate 通过才继续到 250/500。
-7. 输出失败时保留全部产物并写原因；输出成功时再准备 M4-B 跨 seed，不立即混入 queue 或额外解冻。
+1. 不重启 seed11，也不混入 queue、额外解冻或其他实验轴。
+2. 在服务器运行 `scripts/run_skyscript_m4_b_full.sh`；脚本依次完成全矩阵 stage100→250→500。
+3. 单个 run 数值 Gate 失败时，脚本仍完成同 stage 的其余预注册 run 并保留证据，但不会让任何 run
+   进入下一 stage，避免选择性延长和选择性报告。
+4. 每个 stage 都生成独立的跨种子报告；最终检查
+   `outputs/skyscript_m4_rq1_m4_b_stage500/summary.json` 中的逐 seed、mean、sample std 和配对
+   SAT−Web difference。
+5. M4-B step500 报告生成后，把正式跨种子结论和证据 hash 写回本文，再决定后续实验轴。
 
 本轮目标不是让 SAT 必须获胜，而是获得一个身份严格、可解释的视觉域对照。SAT 失败、只在同域改善
 或外部保持不足，都可能是 RQ1 的有效答案。
