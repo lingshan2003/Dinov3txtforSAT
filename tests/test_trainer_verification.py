@@ -22,13 +22,17 @@ class TinyModel(torch.nn.Module):
         super().__init__()
         self.visual_model = torch.nn.Module()
         self.visual_model.backbone = torch.nn.Identity()
-        self.image_projection = torch.nn.Linear(3, 4, bias=False)
-        self.text_projection = torch.nn.Linear(1, 4, bias=False)
+        self.visual_model.head = torch.nn.Linear(3, 4, bias=False)
+        self.text_model = torch.nn.Module()
+        self.text_model.backbone = torch.nn.Identity()
+        self.text_model.head = torch.nn.Linear(1, 4, bias=False)
         self.logit_scale = torch.nn.Parameter(torch.tensor(0.0))
 
     def forward(self, pixels: torch.Tensor, tokens: torch.Tensor):
-        image_features = F.normalize(self.image_projection(pixels.mean(dim=(-1, -2))), dim=-1)
-        text_features = F.normalize(self.text_projection(tokens), dim=-1)
+        image_features = F.normalize(
+            self.visual_model.head(pixels.mean(dim=(-1, -2))), dim=-1
+        )
+        text_features = F.normalize(self.text_model.head(tokens), dim=-1)
         return image_features, text_features, self.logit_scale.exp(), None, None
 
 
@@ -161,6 +165,13 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
     assert summary["steps"] == 2
     assert summary["all_losses_finite"]
     assert summary["all_gradients_finite"]
+    assert summary["visual_backbone_permanently_frozen"]
+    assert (output_dir / "optimizer_groups.json").is_file()
+    assert set(summary["last_group_gradient_norms"]) == {
+        "vision_head",
+        "text_projection",
+        "logit_scale",
+    }
     assert summary["peak_cuda_allocated_bytes"] is None
     assert isinstance(summary["initial_loss"], float)
     assert isinstance(summary["final_loss"], float)

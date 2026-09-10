@@ -525,11 +525,11 @@ drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为
 
 第一轮不是大型正式训练，而是 seed11 的 mechanism screen：
 
-1. 新建与 F0 完全 matched 的570-step配置；570 step恰好完成一次 sampler epoch（36,480次曝光，
-   仅固定 drop-last 15条），避免500 step在首轮中途结束；
+1. F0 已由 M4-A 的 SAT adapter-only seed11 run 完成，不得重训；直接复用其 step100/250/500
+   归档指标作为 matched baseline。为保持 scheduler 和样本曝光严格可比，F1/F2 也运行500 step；
 2. F1 只训练 vision head；F2 同时训练 adapter 与 vision head。vision-head LR 只预注册两个低量级
-   候选 `1e-5` 与 `5e-6`，F2 的 adapter LR 保持 `1e-4`，不做连续试参；
-3. 在 step0/100/250/570 评估 validation、SkyScript 和 RSICD 双向 retrieval，并记录各参数组梯度范数；
+   候选 `1e-5` 与 `5e-6`，F2 的 adapter LR 保持 `1e-4`，共四个候选，不做连续试参；
+3. 在 step0/100/250/500 评估 validation、SkyScript 和 RSICD 双向 retrieval，并记录各参数组梯度范数；
 4. F1/F2 的主判断不是“相对自身极低 SAT step0 是否上涨”，而是同 step 是否超过 matched F0，
    同时比较 F1 与 F2 以判断 adapter 是否仍有独立价值；
 5. 若 image-side 候选失败，先诊断接口、归一化、梯度和参数组，不得解冻视觉 backbone；是否进入
@@ -645,6 +645,8 @@ multi-positive 语义。
 | --- | --- |
 | M4 SAT 短预算配置 | `configs/skyscript_sat_adapter_500step_seed11.toml` |
 | M4 Web 对照配置 | `configs/skyscript_web_adapter_500step_seed11.toml` |
+| SAT F1/F2 机制筛查 | `scripts/run_skyscript_m4_f1_f2_sat_seed11.sh` |
+| SAT F1/F2 汇总 | `tools/summarize_skyscript_m4_f1_f2_sat.py` |
 | 训练 | `src/dinotxt_rs/cli/train.py` |
 | adapter 与冻结 | `src/dinotxt_rs/models/embedding_adapter.py`、`official_dinotxt.py` |
 | loss 与 queue | `src/dinotxt_rs/losses/contrastive.py` |
@@ -669,9 +671,9 @@ python -m compileall -q src tools
 2. 后续研究主线固定 SAT backbone；Web 只保留为通用 dino.txt 天然兼容参照。
 3. 先实现第8.2节的显式 optimizer parameter groups、独立 LR、视觉 backbone 永久冻结断言和完整
    provenance/checkpoint/resume 核验，不立即提交大型 GPU 训练；不得实现 `vision_last_k`。
-4. 冻结 F0/F1/F2 的570-step matched配置和比较 Gate：F0 为 adapter only，F1 为 vision head only，
-   F2 为 adapter + vision head；vision-head LR 预注册 `1e-5`、`5e-6`，adapter LR 保持 `1e-4`。
-5. 完成 seed11 F0/F1/F2 mechanism screen 后，再按结果研究 text projection 和有限 text blocks；这一步
+4. 直接复用已归档的500-step F0，不重训；运行四个500-step SAT 候选：F1 为 vision head only，F2
+   为 adapter + vision head，各使用 `1e-5`、`5e-6` 两个 head LR，adapter LR 保持 `1e-4`。
+5. 完成 seed11 F1/F2 mechanism screen 并与 F0 比较后，再按结果研究 text projection 和有限 text blocks；这一步
    不同时改变 queue、augmentation、文本形式、数据集或训练 seed，视觉 backbone 始终冻结。
 6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
    step须提前冻结，不能根据单个 seed 的结果选择性续跑。

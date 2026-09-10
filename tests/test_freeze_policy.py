@@ -1,4 +1,12 @@
-from dinotxt_rs.models.official_dinotxt import configure_trainable_parameters
+import pytest
+import torch
+
+from dinotxt_rs.config import TrainConfig
+from dinotxt_rs.models.official_dinotxt import (
+    assert_visual_backbone_frozen,
+    configure_trainable_parameters,
+    optimizer_parameter_groups,
+)
 
 
 class FakeParameter:
@@ -71,3 +79,58 @@ def test_explicit_last_k_freeze_policy() -> None:
     assert text_head_parameter.requires_grad
     assert scale.requires_grad
     assert counts == {"total": 28, "trainable": 12}
+
+
+class TorchPolicyModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.visual_model = torch.nn.Module()
+        self.visual_model.backbone = torch.nn.Linear(2, 2)
+        self.visual_model.head = torch.nn.Linear(2, 2)
+        self.text_model = torch.nn.Module()
+        self.text_model.backbone = torch.nn.Module()
+        self.text_model.backbone.blocks = torch.nn.ModuleList([torch.nn.Linear(2, 2)])
+        self.text_model.backbone.ln_final = torch.nn.LayerNorm(2)
+        self.text_model.head = torch.nn.Linear(2, 2)
+        self.image_adapter = torch.nn.Linear(2, 2)
+        self.logit_scale = torch.nn.Parameter(torch.tensor(0.0))
+
+
+def test_named_optimizer_groups_are_disjoint_and_keep_visual_backbone_frozen() -> None:
+    model = TorchPolicyModel()
+    configure_trainable_parameters(
+        model,
+        text_last_k=0,
+        train_vision_head=True,
+        train_text_projection=False,
+        train_logit_scale=False,
+        train_image_adapter=True,
+    )
+    config = TrainConfig(
+        image_adapter_learning_rate=1e-4,
+        vision_head_learning_rate=1e-5,
+    )
+
+    groups, metadata, named = optimizer_parameter_groups(model, config)
+
+    assert [group["name"] for group in groups] == ["image_adapter", "vision_head"]
+    assert [group["lr"] for group in groups] == [1e-4, 1e-5]
+    assert [group["name"] for group in metadata["groups"]] == [
+        "image_adapter",
+        "vision_head",
+    ]
+    assert metadata["visual_backbone_permanently_frozen"]
+    assert not any(
+        parameter.requires_grad for parameter in model.visual_model.backbone.parameters()
+    )
+    assert not named["text_projection"] and not named["text_backbone"]
+
+
+def test_visual_backbone_freeze_violation_is_rejected() -> None:
+    model = TorchPolicyModel()
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    next(model.visual_model.backbone.parameters()).requires_grad_(True)
+
+    with pytest.raises(RuntimeError, match="permanently frozen"):
+        assert_visual_backbone_frozen(model)

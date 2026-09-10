@@ -15,12 +15,33 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
     best_checkpoint = output / "best.pt"
     best_checkpoint.write_bytes(b"checkpoint")
     (output / "config.toml").write_text("[experiment]\nname = 'test'\n", encoding="utf-8")
+    optimizer_groups = {
+        "format_version": 1,
+        "visual_backbone_permanently_frozen": True,
+        "groups": [
+            {
+                "name": "vision_head",
+                "initial_learning_rate": 1e-5,
+                "weight_decay": 0.01,
+                "parameter_tensors": 1,
+                "parameters": 4,
+                "parameter_names": ["visual_model.head.weight"],
+            }
+        ],
+        "trainable_parameter_tensors": 1,
+        "trainable_parameters": 4,
+    }
+    (output / "optimizer_groups.json").write_text(
+        json.dumps(optimizer_groups), encoding="utf-8"
+    )
     metrics = [
         {
             "step": 1,
             "loss": 3.0,
             "in_batch_loss": 2.0,
             "gradient_norm": 5.0,
+            "gradient_norms": {"vision_head": 5.0},
+            "learning_rates": {"vision_head": 1e-5},
             "logit_scale": 100.0,
             "queue_size": 2,
             "peak_cuda_allocated_bytes": 100,
@@ -30,6 +51,8 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
             "loss": 2.0,
             "in_batch_loss": 1.5,
             "gradient_norm": 4.0,
+            "gradient_norms": {"vision_head": 4.0},
+            "learning_rates": {"vision_head": 0.0},
             "logit_scale": 99.0,
             "queue_size": 4,
             "peak_cuda_allocated_bytes": 120,
@@ -102,6 +125,12 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
                 "initial_in_batch_loss": 2.0,
                 "final_in_batch_loss": 1.5,
                 "last_gradient_norm": 4.0,
+                "last_group_gradient_norms": {"vision_head": 4.0},
+                "optimizer_parameter_groups": {
+                    **optimizer_groups,
+                    "final_learning_rates": {"vision_head": 0.0},
+                },
+                "visual_backbone_permanently_frozen": True,
                 "queue_size": 4,
                 "final_checkpoint": str(checkpoint),
                 "fixed_monitor": {"samples": 2, "every": 1, "initial_loss": 2.5, "final_loss": 1.5},
@@ -126,6 +155,7 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
             {
                 "project_commit": "project",
                 "dinov3_commit": "dinov3",
+                "optimizer_parameter_groups": optimizer_groups,
                 "files": {
                     "train_manifest": {"sha256": "manifest"},
                     "val_manifest": {"sha256": "val-manifest"},
@@ -156,6 +186,8 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
         expected_validation_forward_batch_size=4,
         require_best_checkpoint=True,
         required_resume_steps=(1,),
+        required_optimizer_groups=("vision_head",),
+        require_visual_backbone_frozen=True,
     )
 
     assert report["loss"]["mean_first_window"] == 2.5
@@ -167,6 +199,7 @@ def test_verify_training_run_accepts_complete_finite_artifacts(tmp_path) -> None
     assert report["validation_loss"]["first"] == 1.0
     assert report["best_checkpoint"] == str(best_checkpoint)
     assert report["resume_history"][0]["checkpoint_step"] == 1
+    assert report["visual_backbone_permanently_frozen"]
 
     with pytest.raises(ValueError, match="resume history exists"):
         verify_training_run(

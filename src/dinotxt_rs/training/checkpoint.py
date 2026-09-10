@@ -25,6 +25,7 @@ def save_checkpoint(
     loader_generator_state: torch.Tensor,
     run_state: dict[str, Any],
     run_identity: dict[str, Any],
+    optimizer_parameter_groups: dict[str, Any],
     step: int,
     config_text: str,
     name: str | None = None,
@@ -37,6 +38,7 @@ def save_checkpoint(
         "step": step,
         "trainable_model": trainable_state_dict(model),
         "optimizer": optimizer.state_dict(),
+        "optimizer_parameter_groups": optimizer_parameter_groups,
         "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(),
         "queue": queue.state_dict(),
@@ -118,6 +120,7 @@ def load_checkpoint(
     loader_generator: torch.Generator,
     device: torch.device,
     expected_identity: dict[str, Any],
+    expected_optimizer_parameter_groups: dict[str, Any],
 ) -> tuple[int, dict[str, Any], dict[str, Any]]:
     if not path.is_file():
         raise FileNotFoundError(f"Resume checkpoint does not exist: {path}")
@@ -151,6 +154,8 @@ def load_checkpoint(
         )
     if payload.get("config_toml") is None:
         raise ValueError("Resume checkpoint is missing its config snapshot")
+    if payload.get("optimizer_parameter_groups") != expected_optimizer_parameter_groups:
+        raise ValueError("Checkpoint optimizer parameter groups do not match the configured model")
     step = payload.get("step")
     if not isinstance(step, int) or step < 0:
         raise ValueError("Resume checkpoint step is invalid")

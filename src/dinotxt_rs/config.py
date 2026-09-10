@@ -60,6 +60,16 @@ class TrainConfig:
     warmup_steps: int = 100
     learning_rate: float = 5e-5
     weight_decay: float = 0.01
+    image_adapter_learning_rate: float | None = None
+    vision_head_learning_rate: float | None = None
+    text_projection_learning_rate: float | None = None
+    text_backbone_learning_rate: float | None = None
+    logit_scale_learning_rate: float | None = None
+    image_adapter_weight_decay: float | None = None
+    vision_head_weight_decay: float | None = None
+    text_projection_weight_decay: float | None = None
+    text_backbone_weight_decay: float | None = None
+    logit_scale_weight_decay: float | None = None
     max_grad_norm: float = 1.0
     queue_size: int = 0
     fixed_monitor_every: int = 0
@@ -160,6 +170,56 @@ def load_config(path: str | Path) -> Config:
             warmup_steps=int(train.get("warmup_steps", 100)),
             learning_rate=float(train.get("learning_rate", 5e-5)),
             weight_decay=float(train.get("weight_decay", 0.01)),
+            image_adapter_learning_rate=(
+                None
+                if train.get("image_adapter_learning_rate") is None
+                else float(train["image_adapter_learning_rate"])
+            ),
+            vision_head_learning_rate=(
+                None
+                if train.get("vision_head_learning_rate") is None
+                else float(train["vision_head_learning_rate"])
+            ),
+            text_projection_learning_rate=(
+                None
+                if train.get("text_projection_learning_rate") is None
+                else float(train["text_projection_learning_rate"])
+            ),
+            text_backbone_learning_rate=(
+                None
+                if train.get("text_backbone_learning_rate") is None
+                else float(train["text_backbone_learning_rate"])
+            ),
+            logit_scale_learning_rate=(
+                None
+                if train.get("logit_scale_learning_rate") is None
+                else float(train["logit_scale_learning_rate"])
+            ),
+            image_adapter_weight_decay=(
+                None
+                if train.get("image_adapter_weight_decay") is None
+                else float(train["image_adapter_weight_decay"])
+            ),
+            vision_head_weight_decay=(
+                None
+                if train.get("vision_head_weight_decay") is None
+                else float(train["vision_head_weight_decay"])
+            ),
+            text_projection_weight_decay=(
+                None
+                if train.get("text_projection_weight_decay") is None
+                else float(train["text_projection_weight_decay"])
+            ),
+            text_backbone_weight_decay=(
+                None
+                if train.get("text_backbone_weight_decay") is None
+                else float(train["text_backbone_weight_decay"])
+            ),
+            logit_scale_weight_decay=(
+                None
+                if train.get("logit_scale_weight_decay") is None
+                else float(train["logit_scale_weight_decay"])
+            ),
             max_grad_norm=float(train.get("max_grad_norm", 1.0)),
             queue_size=int(train.get("queue_size", 0)),
             fixed_monitor_every=int(train.get("fixed_monitor_every", 0)),
@@ -195,6 +255,28 @@ def validate_config(config: Config) -> None:
     for name, value in positive.items():
         if value <= 0:
             raise ValueError(f"train.{name} must be positive")
+    learning_rates = {
+        "learning_rate": config.train.learning_rate,
+        "image_adapter_learning_rate": config.train.image_adapter_learning_rate,
+        "vision_head_learning_rate": config.train.vision_head_learning_rate,
+        "text_projection_learning_rate": config.train.text_projection_learning_rate,
+        "text_backbone_learning_rate": config.train.text_backbone_learning_rate,
+        "logit_scale_learning_rate": config.train.logit_scale_learning_rate,
+    }
+    for name, value in learning_rates.items():
+        if value is not None and value <= 0:
+            raise ValueError(f"train.{name} must be positive")
+    weight_decays = {
+        "weight_decay": config.train.weight_decay,
+        "image_adapter_weight_decay": config.train.image_adapter_weight_decay,
+        "vision_head_weight_decay": config.train.vision_head_weight_decay,
+        "text_projection_weight_decay": config.train.text_projection_weight_decay,
+        "text_backbone_weight_decay": config.train.text_backbone_weight_decay,
+        "logit_scale_weight_decay": config.train.logit_scale_weight_decay,
+    }
+    for name, value in weight_decays.items():
+        if value is not None and value < 0:
+            raise ValueError(f"train.{name} must be nonnegative")
     if config.data.num_workers < 0:
         raise ValueError("data.num_workers must be nonnegative")
     has_fixed_monitor = config.data.fixed_monitor_manifest is not None

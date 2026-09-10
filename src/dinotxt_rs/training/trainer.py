@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from dinotxt_rs.config import Config
 from dinotxt_rs.data import ImageTextDataset, collate_image_text, make_transform
 from dinotxt_rs.losses import EmbeddingQueue, symmetric_contrastive_loss
+from dinotxt_rs.models import assert_visual_backbone_frozen, optimizer_parameter_groups
 from dinotxt_rs.training.checkpoint import load_checkpoint, save_best_checkpoint, save_checkpoint
 from dinotxt_rs.training.provenance import (
     build_provenance,
@@ -57,8 +58,10 @@ def _assert_finite_loss(loss: torch.Tensor, sample_ids: list[str]) -> None:
 
 
 def _checked_grad_norm(
-    named_parameters: list[tuple[str, torch.nn.Parameter]], max_grad_norm: float
-) -> float:
+    named_parameters: list[tuple[str, torch.nn.Parameter]],
+    named_parameter_groups: dict[str, list[tuple[str, torch.nn.Parameter]]],
+    max_grad_norm: float,
+) -> tuple[float, dict[str, float]]:
     missing_gradients: list[str] = []
     for name, parameter in named_parameters:
         if parameter.grad is None:
@@ -70,6 +73,21 @@ def _checked_grad_norm(
         preview = ", ".join(missing_gradients[:5])
         raise RuntimeError(f"No gradient was produced for trainable parameter(s): {preview}")
 
+    group_norms: dict[str, float] = {}
+    for group_name, group_parameters in named_parameter_groups.items():
+        if not group_parameters:
+            continue
+        squared_norm = sum(
+            float(parameter.grad.detach().float().norm(2)) ** 2
+            for _, parameter in group_parameters
+        )
+        group_norm = math.sqrt(squared_norm)
+        if not math.isfinite(group_norm):
+            raise FloatingPointError(
+                f"Non-finite gradient norm for optimizer group {group_name}: {group_norm}"
+            )
+        group_norms[group_name] = group_norm
+
     gradient_norm = torch.nn.utils.clip_grad_norm_(
         [parameter for _, parameter in named_parameters],
         max_grad_norm,
@@ -78,7 +96,7 @@ def _checked_grad_norm(
     value = float(gradient_norm)
     if not math.isfinite(value):
         raise FloatingPointError(f"Non-finite gradient norm: {value}")
-    return value
+    return value, group_norms
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> Path:
@@ -333,6 +351,7 @@ def train(
         torch.cuda.reset_peak_memory_stats(device)
     model.to(device)
     _set_training_mode(model)
+    assert_visual_backbone_frozen(model, require_eval=True)
 
     transform = make_transform(
         config.model.image_size,
@@ -363,16 +382,16 @@ def train(
         collate_fn=collate_image_text,
         generator=loader_generator,
     )
+    optimizer_groups, optimizer_group_metadata, named_parameter_groups = (
+        optimizer_parameter_groups(model, config.train)
+    )
     named_parameters = [
-        (name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad
+        named_parameter
+        for group in named_parameter_groups.values()
+        for named_parameter in group
     ]
-    parameters = [parameter for _, parameter in named_parameters]
-    if not parameters:
-        raise ValueError("Model has no trainable parameters")
     optimizer = torch.optim.AdamW(
-        parameters,
-        lr=config.train.learning_rate,
-        weight_decay=config.train.weight_decay,
+        optimizer_groups,
         betas=(0.9, 0.99),
     )
     scheduler = _scheduler(optimizer, config.train.warmup_steps, config.train.max_steps)
@@ -384,17 +403,29 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
     config_text = config.source.read_text(encoding="utf-8")
     provenance = build_provenance(config)
+    provenance["optimizer_parameter_groups"] = optimizer_group_metadata
     identity = run_identity(config_text, provenance)
     config_snapshot_path = output_dir / "config.toml"
     metrics_path = output_dir / "metrics.jsonl"
     fixed_monitor_path = output_dir / "fixed_monitor.jsonl"
     validation_path = output_dir / "validation.jsonl"
     resume_history_path = output_dir / "resume_history.jsonl"
+    optimizer_groups_path = output_dir / "optimizer_groups.json"
+    print(
+        "optimizer_parameter_groups="
+        + json.dumps(optimizer_group_metadata, ensure_ascii=False),
+        flush=True,
+    )
 
     if resume is None:
         existing = [
             path.name
-            for path in (config_snapshot_path, metrics_path, output_dir / "provenance.json")
+            for path in (
+                config_snapshot_path,
+                metrics_path,
+                output_dir / "provenance.json",
+                optimizer_groups_path,
+            )
             if path.exists()
         ]
         if existing:
@@ -404,6 +435,7 @@ def train(
             )
         config_snapshot_path.write_text(config_text, encoding="utf-8")
         provenance_path = write_provenance(config, provenance)
+        _write_json_atomic(optimizer_groups_path, optimizer_group_metadata)
         print(f"provenance={provenance_path}", flush=True)
     else:
         if (
@@ -411,8 +443,19 @@ def train(
             or config_snapshot_path.read_text(encoding="utf-8") != config_text
         ):
             raise ValueError("Refusing to resume because output config.toml does not exactly match")
-        if not metrics_path.is_file() or not (output_dir / "provenance.json").is_file():
-            raise ValueError("Refusing to resume without existing metrics and provenance")
+        if (
+            not metrics_path.is_file()
+            or not (output_dir / "provenance.json").is_file()
+            or not optimizer_groups_path.is_file()
+        ):
+            raise ValueError(
+                "Refusing to resume without existing metrics, provenance, and optimizer groups"
+            )
+        stored_optimizer_groups = json.loads(
+            optimizer_groups_path.read_text(encoding="utf-8")
+        )
+        if stored_optimizer_groups != optimizer_group_metadata:
+            raise ValueError("Refusing to resume because optimizer parameter groups differ")
 
     optimizer.zero_grad(set_to_none=True)
     global_step = 0
@@ -434,6 +477,7 @@ def train(
     best_validation_step: int | None = None
     best_checkpoint: Path | None = None
     last_gradient_norm: float | None = None
+    last_group_gradient_norms: dict[str, float] | None = None
     last_checkpoint_step = 0
     resumed_from: Path | None = None
 
@@ -450,6 +494,7 @@ def train(
             loader_generator=loader_generator,
             device=device,
             expected_identity=identity,
+            expected_optimizer_parameter_groups=optimizer_group_metadata,
         )
         if global_step >= target_steps:
             raise ValueError(
@@ -484,6 +529,13 @@ def train(
         last_gradient_norm = run_state.get("last_gradient_norm")
         if last_gradient_norm is not None:
             last_gradient_norm = float(last_gradient_norm)
+        restored_group_norms = run_state.get("last_group_gradient_norms")
+        if restored_group_norms is not None:
+            if not isinstance(restored_group_norms, dict):
+                raise ValueError("Checkpoint group gradient norms are invalid")
+            last_group_gradient_norms = {
+                str(name): float(value) for name, value in restored_group_norms.items()
+            }
         last_checkpoint_step = global_step
         _append_jsonl(
             resume_history_path,
@@ -544,6 +596,7 @@ def train(
             "best_validation_loss": best_validation_loss,
             "best_validation_step": best_validation_step,
             "last_gradient_norm": last_gradient_norm,
+            "last_group_gradient_norms": last_group_gradient_norms,
         }
 
     def save_current_checkpoint() -> Path:
@@ -558,6 +611,7 @@ def train(
             loader_generator_state=loader_generator.get_state(),
             run_state=checkpoint_run_state(),
             run_identity=identity,
+            optimizer_parameter_groups=optimizer_group_metadata,
             step=global_step,
             config_text=config_text,
         )
@@ -607,7 +661,12 @@ def train(
                 continue
 
             scaler.unscale_(optimizer)
-            last_gradient_norm = _checked_grad_norm(named_parameters, config.train.max_grad_norm)
+            assert_visual_backbone_frozen(model, require_eval=True)
+            last_gradient_norm, last_group_gradient_norms = _checked_grad_norm(
+                named_parameters,
+                named_parameter_groups,
+                config.train.max_grad_norm,
+            )
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
@@ -675,8 +734,15 @@ def train(
                     "loss": running_loss / config.train.log_every,
                     "in_batch_loss": running_in_batch_loss / config.train.log_every,
                     "lr": scheduler.get_last_lr()[0],
+                    "learning_rates": {
+                        group["name"]: learning_rate
+                        for group, learning_rate in zip(
+                            optimizer.param_groups, scheduler.get_last_lr(), strict=True
+                        )
+                    },
                     "logit_scale": float(model.logit_scale.exp().detach()),
                     "gradient_norm": last_gradient_norm,
+                    "gradient_norms": last_group_gradient_norms,
                     "queue_size": len(queue),
                     "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
                     "elapsed_seconds": elapsed,
@@ -709,6 +775,7 @@ def train(
         or initial_in_batch_loss is None
         or final_in_batch_loss is None
         or last_gradient_norm is None
+        or last_group_gradient_norms is None
     ):
         raise RuntimeError("Training completed without an optimizer step")
     summary: dict[str, Any] = {
@@ -728,6 +795,17 @@ def train(
         "initial_in_batch_loss": initial_in_batch_loss,
         "final_in_batch_loss": final_in_batch_loss,
         "last_gradient_norm": last_gradient_norm,
+        "last_group_gradient_norms": last_group_gradient_norms,
+        "optimizer_parameter_groups": {
+            **optimizer_group_metadata,
+            "final_learning_rates": {
+                group["name"]: learning_rate
+                for group, learning_rate in zip(
+                    optimizer.param_groups, scheduler.get_last_lr(), strict=True
+                )
+            },
+        },
+        "visual_backbone_permanently_frozen": True,
         "all_losses_finite": True,
         "all_gradients_finite": True,
         "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),

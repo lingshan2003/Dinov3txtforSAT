@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--require-best-checkpoint", action="store_true")
     parser.add_argument("--required-resume-step", action="append", type=int, default=[])
     parser.add_argument("--forbid-resume", action="store_true")
+    parser.add_argument("--required-optimizer-group", action="append", default=[])
+    parser.add_argument("--require-visual-backbone-frozen", action="store_true")
     return parser.parse_args()
 
 
@@ -106,6 +108,8 @@ def verify_training_run(
     require_best_checkpoint: bool = False,
     required_resume_steps: tuple[int, ...] = (),
     forbid_resume: bool = False,
+    required_optimizer_groups: tuple[str, ...] = (),
+    require_visual_backbone_frozen: bool = False,
 ) -> dict[str, Any]:
     if expected_steps <= 0:
         raise ValueError("expected_steps must be positive")
@@ -153,7 +157,10 @@ def verify_training_run(
     summary_path = output_dir / "training_summary.json"
     provenance_path = output_dir / "provenance.json"
     config_path = output_dir / "config.toml"
+    optimizer_groups_path = output_dir / "optimizer_groups.json"
     required_paths = (metrics_path, summary_path, provenance_path, config_path)
+    if required_optimizer_groups or require_visual_backbone_frozen:
+        required_paths += (optimizer_groups_path,)
     missing = [str(path) for path in required_paths if not path.is_file()]
     if missing:
         raise FileNotFoundError("Missing required output artifact(s):\n" + "\n".join(missing))
@@ -207,6 +214,59 @@ def verify_training_run(
             raise ValueError(f"Summary field {field} must be true")
     for field in ("initial_loss", "final_loss", "last_gradient_norm"):
         _finite(summary.get(field), f"summary {field}")
+    optimizer_group_metadata: dict[str, Any] | None = None
+    if required_optimizer_groups or require_visual_backbone_frozen:
+        optimizer_group_metadata = _read_json(optimizer_groups_path)
+        groups = optimizer_group_metadata.get("groups")
+        if not isinstance(groups, list) or not groups:
+            raise ValueError("Optimizer group metadata has no groups")
+        observed_group_names = [group.get("name") for group in groups]
+        if required_optimizer_groups and observed_group_names != list(required_optimizer_groups):
+            raise ValueError(
+                "Unexpected optimizer groups: "
+                f"expected {list(required_optimizer_groups)}, got {observed_group_names}"
+            )
+        for group in groups:
+            name = group["name"]
+            _finite(group.get("initial_learning_rate"), f"optimizer group {name} LR")
+            _finite(group.get("weight_decay"), f"optimizer group {name} weight decay")
+            if not isinstance(group.get("parameters"), int) or group["parameters"] <= 0:
+                raise ValueError(f"Optimizer group {name} has no parameters")
+            names = group.get("parameter_names")
+            if not isinstance(names, list) or not names:
+                raise ValueError(f"Optimizer group {name} has no parameter names")
+            if any("visual_model.backbone" in parameter_name for parameter_name in names):
+                raise ValueError("Visual backbone parameter appeared in an optimizer group")
+        summary_groups = summary.get("optimizer_parameter_groups")
+        if not isinstance(summary_groups, dict):
+            raise ValueError("Training summary has no optimizer parameter groups")
+        for key, value in optimizer_group_metadata.items():
+            if summary_groups.get(key) != value:
+                raise ValueError(f"Summary optimizer metadata differs for {key}")
+        expected_group_names = set(required_optimizer_groups or tuple(observed_group_names))
+        for step, record in enumerate(metrics, start=1):
+            learning_rates = record.get("learning_rates")
+            gradient_norms_by_group = record.get("gradient_norms")
+            if not isinstance(learning_rates, dict) or set(learning_rates) != expected_group_names:
+                raise ValueError(f"Unexpected learning-rate groups at step {step}")
+            if (
+                not isinstance(gradient_norms_by_group, dict)
+                or set(gradient_norms_by_group) != expected_group_names
+            ):
+                raise ValueError(f"Unexpected gradient-norm groups at step {step}")
+            for name in expected_group_names:
+                _finite(learning_rates[name], f"metrics step {step} {name} LR")
+                _finite(
+                    gradient_norms_by_group[name],
+                    f"metrics step {step} {name} gradient norm",
+                )
+    if require_visual_backbone_frozen:
+        if optimizer_group_metadata is None or not optimizer_group_metadata.get(
+            "visual_backbone_permanently_frozen"
+        ):
+            raise ValueError("Optimizer metadata does not assert a frozen visual backbone")
+        if summary.get("visual_backbone_permanently_frozen") is not True:
+            raise ValueError("Training summary does not assert a frozen visual backbone")
     if require_in_batch_loss:
         for field in ("initial_in_batch_loss", "final_in_batch_loss"):
             _finite(summary.get(field), f"summary {field}")
@@ -370,6 +430,11 @@ def verify_training_run(
                 raise ValueError("Resume history has no verified run identity")
 
     provenance = _read_json(provenance_path)
+    if (
+        optimizer_group_metadata is not None
+        and provenance.get("optimizer_parameter_groups") != optimizer_group_metadata
+    ):
+        raise ValueError("Provenance optimizer parameter groups do not match the run")
     observed_sha = provenance.get("files", {}).get("train_manifest", {}).get("sha256")
     if observed_sha != expected_train_manifest_sha256:
         raise ValueError(
@@ -441,6 +506,9 @@ def verify_training_run(
         report["best_validation_step"] = summary["validation"]["best_step"]
     if required_resume_steps or forbid_resume:
         report["resume_history"] = resume_history
+    if optimizer_group_metadata is not None:
+        report["optimizer_parameter_groups"] = optimizer_group_metadata
+        report["visual_backbone_permanently_frozen"] = True
     return report
 
 
@@ -468,6 +536,8 @@ def main() -> None:
         require_best_checkpoint=args.require_best_checkpoint,
         required_resume_steps=tuple(args.required_resume_step),
         forbid_resume=args.forbid_resume,
+        required_optimizer_groups=tuple(args.required_optimizer_group),
+        require_visual_backbone_frozen=args.require_visual_backbone_frozen,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
