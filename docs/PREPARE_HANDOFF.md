@@ -34,6 +34,9 @@ head/text encoder。Web 是天然兼容该对齐头的参照组和性能参考�
 6. `visual_model.backbone` 在所有后续实验中永久冻结，这是不可突破的研究协议；可训练范围只允许
    位于其后的 dino.txt 对齐头、adapter、文本 encoder/projection 和 `logit_scale`，并按模块使用
    分组 learning rate，不能把当前 adapter 的 `1e-4` 直接施加到全部预训练模块。
+7. 后续按“SAT 机制研究 → 冻结候选和协议 → 一次性 Web matched control”的顺序执行；开发期间不在
+   每个候选上来回切换 backbone。只有 SAT 侧的提升情况、训练范围、LR 和选择规则确定后，才统一
+   替换为 Web backbone，批量完成同构对照矩阵。
 
 研究背景见[科研背景](../DINOv3_Remote_Sensing_Domain_Text_Alignment_Research_Plan.md)，稳定工程规则见
 [开发架构](DEVELOPMENT_ARCHITECTURE.md)。本文是当前状态、具体协议和下一步操作的唯一主文档。
@@ -183,7 +186,8 @@ sample standard deviation（ddof=1），SAT−Web 为同 seed 配对差异后再
 - 两域 validation loss 都稳定下降且 step500 为 best；SAT 的更大下降反映严重初始错配被部分
   修复，不能解读成最终模型更好。
 
-M4 短预算结论：在“冻结通用 dino.txt 对齐头 + 仅训练相同 image adapter”的协议下，Web DINOv3
+M4 的 adapter 阶段至此完成，并已具备 Web/SAT × 三 seed 的 RQ1 配对矩阵证据。短预算结论是：
+在“冻结通用 dino.txt 对齐头 + 仅训练相同 image adapter”的协议下，Web DINOv3
 初始化在500 step时提供跨 seed 稳定的更高绝对图文检索性能；SAT DINOv3 则表现出更大的同域增量，
 证明通用对齐能力可以通过微调迁移到 SAT 路径，但单个输出 adapter 尚不足以弥合初始化错配。
 
@@ -459,7 +463,8 @@ outputs/skyscript_m4_rq1_m4_b_stage{100,250,500}/summary.json
 
 - 提供通用 dino.txt 对齐头天然兼容时的参考上界；
 - 帮助判断 SAT 的问题来自训练器本身，还是来自 backbone/head 接口错配；
-- 在少数关键候选上做 matched control，而不是替代 SAT 主线或为每个开发尝试都重复三 seed。
+- 在 SAT 阶段结束后，对冻结的关键候选一次性做 matched control，而不是替代 SAT 主线或为每个
+  开发尝试即时重复训练。
 
 SAT 路径要回答的是：在**始终冻结 SAT 视觉 backbone**、完整保留遥感视觉表征的前提下，能否微调
 其后的对齐层和文本侧，把它映射到通用 dino.txt 文本空间。M4 已证明仅在最终2048维 image
@@ -551,6 +556,22 @@ F0 的同 step 绝对结果比较。
 
 这套顺序把两个问题分开：短 screen 回答“应该微调哪些模块、用什么量级的 LR”，epoch-aligned
 三 seed实验才回答“选定 SAT 微调方案在充分数据曝光下是否稳定优于 adapter-only”。
+
+### 8.6 Web backbone 对照统一后置
+
+后续不为 F1、F2、F3 等每一个 SAT 开发结果立刻追加 Web run。先完成 SAT 侧机制筛查和正式训练，
+确认保留候选在预注册指标上确有稳定提升，并冻结需要进入最终对照表的配置集合。然后统一复制这些
+配置，一次性运行 Web matched control；除以下四项外不得产生差异：
+
+- `experiment.name`；
+- `experiment.output_dir`；
+- `model.backbone_domain`；
+- `model.backbone_weights`。
+
+Web 批次至少覆盖 adapter-only 基线和最终 SAT 胜出方案；若多个 SAT 机制候选被保留进主结果矩阵，
+则对应 Web 候选也在同一批次全部完成。Web 结果不回流用于修改 SAT 超参数、筛选 checkpoint 或重写
+通过规则，只用于回答相同对齐方法在不同冻结视觉 backbone 上的效果差异。这样既避免开发阶段反复
+切换 backbone，也保留 RQ1 所需的严格配对解释。
 
 ## 9. 可选研究分支
 
@@ -654,6 +675,8 @@ python -m compileall -q src tools
    不同时改变 queue、augmentation、文本形式、数据集或训练 seed，视觉 backbone 始终冻结。
 6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
    step须提前冻结，不能根据单个 seed 的结果选择性续跑。
+7. SAT 侧机制与正式结果完成后，冻结最终矩阵，再只替换 backbone domain/weights 和输出身份，
+   一次性运行对应 Web matched controls；不得用 Web 结果反向调整 SAT 方案。
 
 当前核心假设是：SAT backbone 已包含有价值且不应被训练破坏的遥感视觉表征，主要障碍是它与通用
 dino.txt 对齐头不兼容。下一步不是放弃或微调 SAT backbone，而是在其永久冻结的前提下，依次检验
