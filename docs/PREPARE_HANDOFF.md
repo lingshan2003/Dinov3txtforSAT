@@ -1,6 +1,6 @@
 # 最新交接：M4 短预算机制证据完成，进入 SAT-centric 微调研究
 
-更新时间：2026-09-10
+更新时间：2026-09-11
 
 ## 1. 一页结论
 
@@ -547,7 +547,7 @@ head 虽然内部可以包含 transformer blocks，但它是附加在冻结 back
 | F0 | adapter only | 已完成；当前图像侧锚点 |
 | F1 | dino.txt vision head only | 已完成；明显弱于 F0，不扩 seed |
 | F2 | adapter + dino.txt vision head | 已完成；未在主指标上超过 F0，不扩 seed |
-| F3 | F0 adapter + text projection | 下一步；允许文本空间最终映射轻量适配 |
+| F3 | F0 adapter + text projection | 已实现待运行；允许文本空间最终映射轻量适配 |
 | F4 | F3 + 最后1个 text block/final norm | 研究有限文本 encoder 微调是否继续改善 |
 | F5 | 仅在 F4 有效后扩到最后2或4个 text blocks | 检验更多文本侧容量，不能默认执行 |
 | F6 | logit scale | 单独研究温度校准，不与新增表示层同时开启 |
@@ -576,10 +576,18 @@ F1/F2 已经分辨出现有 dino.txt vision head、adapter 及二者组合的作
 结果见第2.7节。没有候选同时超过 F0，故当前不追加 F1/F2 的三 seed 或 Web run；这不是运行失败，
 而是一次有效的负向机制筛查。
 
-建议的选择规则需在代码配置前进一步固化：SkyScript mean recall 为主要指标；validation loss、
-双向 rank/recall 和 RSICD 为约束；不得只按最好 checkpoint 或单方向 R@K 选择。SAT 的 official
-RSICD 起点接近零，旧的“相对 official 不下降0.01”门槛在这一阶段过于宽松，F1/F2 应直接与 matched
-F0 的同 step 绝对结果比较。
+F3 的代码与选择规则已在看到结果前固化。两个候选都保持 adapter LR `1e-4`，只把 text
+projection LR 分别设为 `1e-5`、`5e-6`；视觉 backbone、vision head、text backbone 和 logit scale
+均冻结。单条脚本连续完成两个候选的0→100→250→500训练、产物核验、SkyScript/RSICD检索、文本
+漂移评估和总报告，不要求人工逐阶段放行。阶段性 checkpoint 仍保留，用于观察轨迹和验证 resume，
+而不是降低执行效率。
+
+F3 进入下一轮研究的预注册条件为：step500 validation 低于 matched F0；SkyScript mean recall 在
+step250和500都高于matched F0；step500 RSICD mean recall 至多比matched F0低M4-B中F0的一个
+cross-seed sample std（`0.0032465`）；同时候选自身的validation、SkyScript和RSICD轨迹必须从初始化
+改善。文本 drift 是诊断量，不在seed11筛查中事后设阈值；报告必须给出SkyScript-val、RSICD-val及
+合并文本相对冻结官方dino.txt文本模型的cosine-distance完整分布。即使自动条件通过，也必须人工检查
+双向R@K/rank后才能决定是否进入F4或正式三seed，不能只按单个最好checkpoint选择。
 
 ### 8.5 正式长训练的预算定义
 
@@ -694,8 +702,10 @@ multi-positive 语义。
 | step0 parity | `src/dinotxt_rs/cli/check_step0_parity.py` |
 | SkyScript retrieval | `src/dinotxt_rs/cli/evaluate_skyscript.py` |
 | RSICD retrieval | `src/dinotxt_rs/cli/evaluate_rsicd.py` |
+| 文本 embedding drift | `src/dinotxt_rs/cli/evaluate_text_drift.py`、`evaluation/text_drift.py` |
 | S1 编排/汇总 | `scripts/run_skyscript_gate_s1.sh`、`tools/summarize_skyscript_gate_s1.py` |
 | S2 编排/汇总 | `scripts/run_skyscript_gate_s2.sh`、`tools/summarize_skyscript_gate_s2.py` |
+| F3 编排/汇总 | `scripts/run_skyscript_m4_f3_sat_seed11.sh`、`tools/summarize_skyscript_m4_f3_sat.py` |
 
 代码检查：
 
@@ -713,8 +723,8 @@ python -m compileall -q src tools
    provenance/checkpoint/resume 核验已经实现；不得新增 `vision_last_k`。
 4. F1/F2 seed11 mechanism screen 已完成，四个候选均未同时超过 F0；不为它们补三 seed 或 Web
    对照。详细数值和结论见第2.7节。
-5. 下一步以已归档 F0 为锚点，建立“adapter + text projection”的500-step seed11候选；只新增文本
-   projection 这一变量，并加入冻结参考文本 embedding drift 评价。视觉 backbone 和 vision head 均冻结。
+5. “adapter + text projection”的F3两档500-step seed11候选及冻结参考文本embedding drift已经实现，
+   下一步在服务器一键运行并分析总报告；F0直接复用，视觉backbone和vision head均冻结。
 6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
    step须提前冻结，不能根据单个 seed 的结果选择性续跑。
 7. SAT 侧机制与正式结果完成后，冻结最终矩阵，再只替换 backbone domain/weights 和输出身份，

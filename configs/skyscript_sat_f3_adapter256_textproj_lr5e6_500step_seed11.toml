@@ -1,0 +1,49 @@
+# SAT-only F3 mechanism screen. The visual backbone and dino.txt vision head are frozen.
+[experiment]
+name = "skyscript_sat_f3_adapter256_textproj_lr5e6_36495_500step_seed11"
+seed = 11
+output_dir = "outputs/skyscript_sat_f3_adapter256_textproj_lr5e6_36495_500step_seed11"
+
+[model]
+dinov3_repo = "external/dinov3"
+backbone_domain = "sat"
+backbone_weights = "assets/checkpoints/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+dinotxt_weights = "assets/checkpoints/dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth"
+bpe_vocab = "assets/checkpoints/bpe_simple_vocab_16e6.txt.gz"
+image_size = 224
+text_last_k = 0
+train_vision_head = false
+train_text_projection = true
+train_logit_scale = false
+image_adapter_bottleneck = 256
+
+[data]
+train_manifest = "assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.jsonl"
+val_manifest = "assets/data/manifests/skyscript_images23_val_raw_unique4055_seed23_global77.jsonl"
+validation_batch_size = 16
+validation_forward_batch_size = 64
+validation_num_workers = 4
+validation_prefetch_factor = 4
+num_workers = 0
+train_augmentation = false
+shuffle_train = true
+
+[train]
+device = "cuda"
+precision = "bf16"
+batch_size = 16
+gradient_accumulation = 4
+max_steps = 500
+warmup_steps = 50
+learning_rate = 0.0001
+weight_decay = 0.01
+image_adapter_learning_rate = 0.0001
+image_adapter_weight_decay = 0.01
+text_projection_learning_rate = 0.000005
+text_projection_weight_decay = 0.01
+max_grad_norm = 1.0
+queue_size = 0
+validation_every = 50
+validation_at_start = true
+log_every = 1
+checkpoint_every = 50
