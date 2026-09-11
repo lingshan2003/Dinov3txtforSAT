@@ -196,6 +196,42 @@ M4 的 adapter 阶段至此完成，并已具备 Web/SAT × 三 seed 的 RQ1 配
 主线应以 SAT 为研究对象，Web 仅作为天然兼容对照。该结论不能外推为 SAT backbone 的纯视觉表征
 质量劣于 Web backbone；n=3 的均值与 sample std 只是短预算重复实验的描述性证据。
 
+### 2.7 SAT F1/F2：vision head 微调机制筛查完成
+
+seed11 的四个500-step候选已经完成，汇总状态为 `complete`，并核验
+`visual_backbone_permanently_frozen=true`。F0 直接复用 M4-A 的 SAT adapter-only 归档结果，没有
+重训。step500 结果如下；validation loss 越低越好，其余两列越高越好：
+
+| 候选 | 可训练范围 | validation loss | SkyScript mean recall | RSICD mean recall |
+| --- | --- | ---: | ---: | ---: |
+| F0 | adapter | **1.1673670** | **0.0659679** | 0.0642901 |
+| F1, head LR `1e-5` | vision head | 2.5149034 | 0.0066995 | 0.0085314 |
+| F1, head LR `5e-6` | vision head | 2.8703583 | 0.0036580 | 0.0071603 |
+| F2, head LR `1e-5` | adapter + vision head | 1.2193511 | 0.0577065 | 0.0590798 |
+| F2, head LR `5e-6` | adapter + vision head | 1.2396846 | 0.0564324 | **0.0649299** |
+
+新旧代码运行的 step0 存在极小数值/排序差异：validation loss 约0.00045，SkyScript mean recall
+约0.000041，RSICD mean recall约0.000061；远小于主要 step500 候选差距，不改变结论。F2 `5e-6`
+在 RSICD 上仅高于 F0 的0.00064，因此该微小优势尤其不能脱离三 seed 波动单独解读。
+
+结论：
+
+- 四个候选相对各自接近失效的 step0 都有提升，证明梯度、冻结策略和训练链路有效；但这不足以说明
+  新机制优于已经完成的 F0。
+- F1 在两个 LR 下都远弱于 F0。vision head 有约25.33M可训练参数，仅靠它在当前500-step日程中
+  不是有效替代；`1e-5` 全程优于 `5e-6`，说明更低 LR 主要让学习更慢，不能据此宣称 head 无容量。
+- F2 明显依赖 adapter 才能接近 F0，但两个 LR 的 SkyScript 都低于 F0：分别低0.00826和0.00954；
+  validation loss 也分别高0.05198和0.07232。因此当前没有证据表明 vision head 与 adapter 在同域
+  主指标上互补。
+- F2 `5e-6` 的 RSICD 比 F0 高0.00064，但幅度远小于 M4-B SAT F0 的三 seed 标准差0.00325，且伴随
+  SkyScript/validation退化，只能记录为可能的域保持权衡，不能选为主方案。
+- F2 `1e-5` 比 `5e-6` 更适合同域 SkyScript 和 validation；`5e-6` 更保留 RSICD，呈现清晰的
+  domain-adaptation trade-off。四个候选均未满足同时超过 F0 的预设条件，`eligible_candidates=[]`。
+
+决策：F1/F2 不进入三 seed，也暂不复制到 Web。图像侧主方案继续使用 F0 adapter-only；下一项
+机制筛查以 F0 为锚点，只新增 text projection。若 text projection 仍提供一致收益，再研究最后1个
+text block/final norm，并报告相对冻结参考文本模型的 embedding drift。
+
 ## 3. 证据身份与核验范围
 
 | 范围 | 身份 |
@@ -213,11 +249,11 @@ M4 的 adapter 阶段至此完成，并已具备 Web/SAT × 三 seed 的 RQ1 配
 | M4-A Web–SAT summary SHA-256 | `69bef90195afca5d19bd79a110f2261c0ece9a281fe6b71672aaa3d93ffaa9dc` |
 | M4-B step500 summary SHA-256 | `925ec542e5e2276fe903930f2295b6db78be1c4798dfb3429f0c185d548da24d` |
 | M4-B 编排与报告代码 | `97f5b6ab3f672772bb15158d8c05653f1130e2b6` |
+| SAT F1/F2 summary SHA-256 | `66a3aff1aced2b7a3bc4388bc7b9c0b7bba0efac5970a0df5c408135310910b7` |
 
-本次读取的是用户从服务器下载的 M4-B step500 `summary.json` 副本。汇总工具在服务器生成报告时
-已经逐一验证六个 stage report、冻结配置和 M4-A 前置身份；本会话没有直接登录服务器重新读取
-checkpoint。服务器中的训练目录、stage summary、preflight、parity、overlap、逐 checkpoint
-retrieval 和 resume history 仍是最底层完整证据来源，其 stage report hash 已写入 M4-B summary。
+本地还读取了用户从服务器下载的 SAT F1/F2 `summary.json` 副本。本会话没有直接登录服务器重新
+读取 checkpoint；服务器中的训练目录、parity、optimizer groups、逐 checkpoint retrieval 和
+resume history 仍是最底层完整证据来源。
 
 seed11 与 seed23/47 的训练 project commit 不同，但两者之间没有改变训练器、adapter 或模型训练
 实现；新增的是评测、编排、配置和文档。正式报告仍须披露 provenance，不把不同 commit 写成同一
@@ -506,24 +542,25 @@ head 虽然内部可以包含 transformer blocks，但它是附加在冻结 back
 所有候选都使用永久冻结的 SAT backbone、相同数据/split/loss/augmentation-off/queue-off，并从
 同一官方初始化重新开始；checkpoint 不能从上一个候选续跑：
 
-| 阶段 | 可训练范围 | 要检验的机制 |
+| 阶段 | 可训练范围 | 状态/要检验的机制 |
 | --- | --- | --- |
-| F0 | adapter only | M4 的最小可适配参照 |
-| F1 | dino.txt vision head only | 判断官方对齐头本身能否适配冻结的 SAT 特征 |
-| F2 | adapter + dino.txt vision head | 检验两种 image-side 对齐能力是否互补 |
-| F3 | 胜出的 image-side 方案 + text projection | 允许文本空间最终映射轻量适配 |
+| F0 | adapter only | 已完成；当前图像侧锚点 |
+| F1 | dino.txt vision head only | 已完成；明显弱于 F0，不扩 seed |
+| F2 | adapter + dino.txt vision head | 已完成；未在主指标上超过 F0，不扩 seed |
+| F3 | F0 adapter + text projection | 下一步；允许文本空间最终映射轻量适配 |
 | F4 | F3 + 最后1个 text block/final norm | 研究有限文本 encoder 微调是否继续改善 |
 | F5 | 仅在 F4 有效后扩到最后2或4个 text blocks | 检验更多文本侧容量，不能默认执行 |
 | F6 | logit scale | 单独研究温度校准，不与新增表示层同时开启 |
 
-这里的编号表示机制候选，不表示必须全部依次执行。F1 与 F2 首先分辨现有 dino.txt vision head、
-adapter 及二者组合的作用；之后可以训练 text projection 和有限数量的 text blocks，但无论结果如何都
-不能把解冻视觉 backbone 当作候选。文本侧实验还需报告相对冻结参考模型的 text embedding cosine
-drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为一谈。
+F1/F2 已经分辨出现有 dino.txt vision head、adapter 及二者组合的作用：当前短预算下 adapter 是
+主要有效模块，微调 vision head 没有增加同域收益。因此 F3 不携带 vision-head 微调，而以 F0 为
+锚点只增加 text projection。无论结果如何都不能把解冻视觉 backbone 当作候选。文本侧实验还需报告
+相对冻结参考模型的 text embedding cosine drift，避免把“适配遥感文本”与“遗忘通用文本空间”
+混为一谈。
 
 ### 8.4 先搞明白微调，再做长训练
 
-第一轮不是大型正式训练，而是 seed11 的 mechanism screen：
+第一轮 seed11 mechanism screen 已完成，归档协议是：
 
 1. F0 已由 M4-A 的 SAT adapter-only seed11 run 完成，不得重训；直接复用其 step100/250/500
    归档指标作为 matched baseline。为保持 scheduler 和样本曝光严格可比，F1/F2 也运行500 step；
@@ -535,6 +572,9 @@ drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为
 5. 若 image-side 候选失败，先诊断接口、归一化、梯度和参数组，不得解冻视觉 backbone；是否进入
    text projection/text encoder 候选应依据预注册规则和诊断结果，而不是把视觉解冻作为补救；
 6. mechanism screen 使用同一个 seed 只负责方向和稳定性检查，不产生最终论文性能结论。
+
+结果见第2.7节。没有候选同时超过 F0，故当前不追加 F1/F2 的三 seed 或 Web run；这不是运行失败，
+而是一次有效的负向机制筛查。
 
 建议的选择规则需在代码配置前进一步固化：SkyScript mean recall 为主要指标；validation loss、
 双向 rank/recall 和 RSICD 为约束；不得只按最好 checkpoint 或单方向 R@K 选择。SAT 的 official
@@ -669,18 +709,19 @@ python -m compileall -q src tools
 
 1. 把 M4 定位为 adapter-only、0.877 epoch 的三 seed 短预算机制证据，不写成充分训练的最终实验。
 2. 后续研究主线固定 SAT backbone；Web 只保留为通用 dino.txt 天然兼容参照。
-3. 先实现第8.2节的显式 optimizer parameter groups、独立 LR、视觉 backbone 永久冻结断言和完整
-   provenance/checkpoint/resume 核验，不立即提交大型 GPU 训练；不得实现 `vision_last_k`。
-4. 直接复用已归档的500-step F0，不重训；运行四个500-step SAT 候选：F1 为 vision head only，F2
-   为 adapter + vision head，各使用 `1e-5`、`5e-6` 两个 head LR，adapter LR 保持 `1e-4`。
-5. 完成 seed11 F1/F2 mechanism screen 并与 F0 比较后，再按结果研究 text projection 和有限 text blocks；这一步
-   不同时改变 queue、augmentation、文本形式、数据集或训练 seed，视觉 backbone 始终冻结。
+3. 显式 optimizer parameter groups、独立 LR、视觉 backbone 永久冻结断言和完整
+   provenance/checkpoint/resume 核验已经实现；不得新增 `vision_last_k`。
+4. F1/F2 seed11 mechanism screen 已完成，四个候选均未同时超过 F0；不为它们补三 seed 或 Web
+   对照。详细数值和结论见第2.7节。
+5. 下一步以已归档 F0 为锚点，建立“adapter + text projection”的500-step seed11候选；只新增文本
+   projection 这一变量，并加入冻结参考文本 embedding drift 评价。视觉 backbone 和 vision head 均冻结。
 6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
    step须提前冻结，不能根据单个 seed 的结果选择性续跑。
 7. SAT 侧机制与正式结果完成后，冻结最终矩阵，再只替换 backbone domain/weights 和输出身份，
    一次性运行对应 Web matched controls；不得用 Web 结果反向调整 SAT 方案。
 
-当前核心假设是：SAT backbone 已包含有价值且不应被训练破坏的遥感视觉表征，主要障碍是它与通用
-dino.txt 对齐头不兼容。下一步不是放弃或微调 SAT backbone，而是在其永久冻结的前提下，依次检验
-vision head、adapter、text projection 和少量 text blocks 的可控微调，把“能涨点”的 M4 现象推进
-为可解释、充分训练且可复现的 SAT 图文对齐方法。
+当前证据说明：SAT backbone 已包含有价值且不应被训练破坏的遥感视觉表征；在当前短预算下，最终
+embedding adapter 比直接微调25.33M参数的 dino.txt vision head 更有效，二者联合也未超过
+adapter-only。下一步不是放弃或微调 SAT backbone，而是在永久冻结 backbone 和 vision head 的前提
+下，以 adapter 为锚点检验 text projection 和少量 text blocks 的可控微调，把“能涨点”的 M4 现象
+推进为可解释、充分训练且可复现的 SAT 图文对齐方法。
