@@ -1,6 +1,6 @@
-# 最新交接：M4 短预算机制证据完成，进入 SAT-centric 微调研究
+# 最新交接：M4 与 SAT F1–F3 机制筛查完成，准备冻结正式实验路线
 
-更新时间：2026-09-11
+更新时间：2026-10-02
 
 ## 1. 一页结论
 
@@ -18,8 +18,11 @@ Gate S0、S1、S2、M4-A 和 M4-B 均已通过，但这些 Gate 证明的是短�
 项目的研究主角仍是 SAT DINOv3：目标是在永久冻结 SAT backbone 的前提下，利用 SkyScript 微调
 其后的对齐模块和文本侧，使只有视觉预训练权重的 SAT backbone 接入现有通用 dino.txt vision
 head/text encoder。Web 是天然兼容该对齐头的参照组和性能参考，不是替代 SAT 的后续研究主线。
-下一步进入第 8 节的 SAT-centric 微调研究，先把不同模块的作用与安全 learning rate 搞清楚，再
-设计覆盖完整 epoch 的正式长训练。
+SAT 侧的 F1–F3 seed11 机制筛查也已完成：微调 dino.txt vision head、联合微调 vision head，或在
+adapter 上增加低学习率 text projection，都没有在预注册的同域主指标上稳定超过 adapter-only F0。
+因此当前正式实验首选仍是永久冻结视觉 backbone 与官方 dino.txt，只训练 image adapter。若还要继续
+文本侧开发，只允许在进入正式三 seed 前做一次有明确止损规则的高一档 projection-LR 筛查；不得直接
+进入 F4，也不得以 RSICD 单项改善替代 SkyScript 主指标。
 
 本轮同时冻结以下研究决策：
 
@@ -232,6 +235,52 @@ seed11 的四个500-step候选已经完成，汇总状态为 `complete`，并核
 机制筛查以 F0 为锚点，只新增 text projection。若 text projection 仍提供一致收益，再研究最后1个
 text block/final norm，并报告相对冻结参考文本模型的 embedding drift。
 
+### 2.8 SAT F3：text projection 微调机制筛查完成
+
+F3 的服务器总报告：
+
+```text
+outputs/skyscript_m4_f3_sat_seed11/summary.json
+```
+
+报告状态为 `complete`，并确认 `visual_backbone_permanently_frozen=true`、`vision_head_frozen=true`。
+两个候选都从官方初始化重新开始，adapter LR 固定为 `1e-4`，仅新增 text projection，分别使用
+`1e-5` 和 `5e-6`；text backbone 与 logit scale 也保持冻结。step500 结果如下：
+
+| 候选 | validation loss | SkyScript mean recall | 相对 F0 | RSICD mean recall | 相对 F0 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| F0 adapter-only | 1.1673670 | **0.0659679** | — | 0.0642901 | — |
+| F3 projection LR `1e-5` | **1.1673244** | 0.0644061 | -0.0015619 | 0.0651432 | +0.0008531 |
+| F3 projection LR `5e-6` | 1.1714651 | 0.0634607 | -0.0025072 | **0.0695003** | +0.0052102 |
+
+两个候选均从各自接近失效的 SAT step0 明显改善，但 `eligible_candidates=[]`。具体原因：
+
+- `1e-5` 的 step500 validation 与 F0 实质持平，差值只有 -0.000043；SkyScript 却低0.00156，
+  RSICD只高0.00085。SkyScript和RSICD差异都没有超过F0在M4-B中的对应cross-seed sample std，
+  不能视为新方案优势。
+- `5e-6` 的 RSICD 高0.00521，约为F0 RSICD跨seed标准差的1.6倍；六项recall中五项提高，两个方向
+  的rank也总体改善。这是一个真实、值得保留的外部保持信号。
+- 但 `5e-6` 同时令 SkyScript 低0.00251、validation高0.00410。它体现的是“牺牲同域主指标，换取
+  RSICD保持”的domain trade-off，不满足主方案选择条件。
+- 两个候选在step100的SkyScript都暂时高于F0，但到step250和500均被F0反超；projection的早期收益
+  没有成为持续收益，不能按早期或最好checkpoint选择。
+
+文本漂移评估覆盖4,055条SkyScript-val文本与5,470条RSICD-val文本，共9,525条。step500相对冻结
+官方dino.txt文本模型的aggregate mean cosine distance分别为：
+
+- projection LR `1e-5`：`1.5413e-5`；
+- projection LR `5e-6`：`6.0059e-6`。
+
+两个候选都没有文本的cosine distance超过`1e-4`，因此当前低LR没有造成明显文本空间遗忘，但也说明
+实际旋转极小，可能仍处于欠更新区间。该结论只覆盖SkyScript/RSICD遥感caption，不能外推为通用Web
+文本能力完全保持。
+
+决策：F3低LR候选不补三seed、不做Web对照，也不作为进入F4的依据。F0 adapter-only继续作为正式
+实验锚点。若下一会话仍希望把文本侧LR问题彻底排除，可在正式实验前只做一次F3b：projection LR
+`2e-5`与`5e-5`，其余协议不变，并沿用同一主指标和止损条件；若仍不能在step250和500持续超过F0，
+立即结束projection/text-block分支并进入F0的epoch-aligned正式实验。不得跳过F3门槛直接解冻text
+block。
+
 ## 3. 证据身份与核验范围
 
 | 范围 | 身份 |
@@ -250,10 +299,12 @@ text block/final norm，并报告相对冻结参考文本模型的 embedding dri
 | M4-B step500 summary SHA-256 | `925ec542e5e2276fe903930f2295b6db78be1c4798dfb3429f0c185d548da24d` |
 | M4-B 编排与报告代码 | `97f5b6ab3f672772bb15158d8c05653f1130e2b6` |
 | SAT F1/F2 summary SHA-256 | `66a3aff1aced2b7a3bc4388bc7b9c0b7bba0efac5970a0df5c408135310910b7` |
+| SAT F3 编排与漂移评估代码 | `69e2c86` |
+| SAT F3 总报告 | `outputs/skyscript_m4_f3_sat_seed11/summary.json` |
 
-本地还读取了用户从服务器下载的 SAT F1/F2 `summary.json` 副本。本会话没有直接登录服务器重新
-读取 checkpoint；服务器中的训练目录、parity、optimizer groups、逐 checkpoint retrieval 和
-resume history 仍是最底层完整证据来源。
+本地还读取了用户从服务器下载的 SAT F1/F2 与 F3 `summary.json` 副本。本会话没有直接登录服务器
+重新读取 checkpoint；服务器中的训练目录、parity、optimizer groups、逐 checkpoint retrieval、
+text drift报告和resume history仍是最底层完整证据来源。
 
 seed11 与 seed23/47 的训练 project commit 不同，但两者之间没有改变训练器、adapter 或模型训练
 实现；新增的是评测、编排、配置和文档。正式报告仍须披露 provenance，不把不同 commit 写成同一
@@ -547,16 +598,17 @@ head 虽然内部可以包含 transformer blocks，但它是附加在冻结 back
 | F0 | adapter only | 已完成；当前图像侧锚点 |
 | F1 | dino.txt vision head only | 已完成；明显弱于 F0，不扩 seed |
 | F2 | adapter + dino.txt vision head | 已完成；未在主指标上超过 F0，不扩 seed |
-| F3 | F0 adapter + text projection | 已实现待运行；允许文本空间最终映射轻量适配 |
-| F4 | F3 + 最后1个 text block/final norm | 研究有限文本 encoder 微调是否继续改善 |
+| F3 | F0 adapter + text projection | 已完成；低LR未稳定超过F0，不扩seed |
+| F3b | F0 adapter + text projection高一档LR | 可选的最后一次开发筛查；`2e-5`/`5e-5`，失败即停止文本分支 |
+| F4 | F3 + 最后1个 text block/final norm | 暂不执行；只有projection先形成持续同域收益才可进入 |
 | F5 | 仅在 F4 有效后扩到最后2或4个 text blocks | 检验更多文本侧容量，不能默认执行 |
 | F6 | logit scale | 单独研究温度校准，不与新增表示层同时开启 |
 
 F1/F2 已经分辨出现有 dino.txt vision head、adapter 及二者组合的作用：当前短预算下 adapter 是
-主要有效模块，微调 vision head 没有增加同域收益。因此 F3 不携带 vision-head 微调，而以 F0 为
-锚点只增加 text projection。无论结果如何都不能把解冻视觉 backbone 当作候选。文本侧实验还需报告
-相对冻结参考模型的 text embedding cosine drift，避免把“适配遥感文本”与“遗忘通用文本空间”
-混为一谈。
+主要有效模块，微调 vision head 没有增加同域收益。F3进一步表明，两档低LR text projection虽然
+没有造成明显文本漂移，也没有增加持续的SkyScript收益。因此F4不能自动执行。无论后续是否做可选
+F3b，都不能把解冻视觉backbone当作候选；文本侧实验继续报告相对冻结参考模型的text embedding
+cosine drift，避免把“适配遥感文本”与“遗忘通用文本空间”混为一谈。
 
 ### 8.4 先搞明白微调，再做长训练
 
@@ -588,6 +640,12 @@ cross-seed sample std（`0.0032465`）；同时候选自身的validation、SkySc
 改善。文本 drift 是诊断量，不在seed11筛查中事后设阈值；报告必须给出SkyScript-val、RSICD-val及
 合并文本相对冻结官方dino.txt文本模型的cosine-distance完整分布。即使自动条件通过，也必须人工检查
 双向R@K/rank后才能决定是否进入F4或正式三seed，不能只按单个最好checkpoint选择。
+
+F3结果见第2.8节：两档LR都未满足SkyScript在step250和500持续超过F0的主条件。`1e-5`在step500
+几乎复现F0 validation但SkyScript略低；`5e-6`表现出更强RSICD保持却牺牲同域指标。低LR文本漂移
+远低于`1e-4`，没有遗忘迹象，但不能把“改动很小”本身解释为收益。当前不进入F4。下一会话需要在
+两个选项中明确选择：直接锁定F0进入正式长训练；或执行唯一一次F3b高一档LR筛查后无条件收敛路线。
+推荐在仍以“搞清微调”为当前目标时先做F3b，但不得继续扩展成连续LR搜索。
 
 ### 8.5 正式长训练的预算定义
 
@@ -723,15 +781,17 @@ python -m compileall -q src tools
    provenance/checkpoint/resume 核验已经实现；不得新增 `vision_last_k`。
 4. F1/F2 seed11 mechanism screen 已完成，四个候选均未同时超过 F0；不为它们补三 seed 或 Web
    对照。详细数值和结论见第2.7节。
-5. “adapter + text projection”的F3两档500-step seed11候选及冻结参考文本embedding drift已经实现，
-   下一步在服务器一键运行并分析总报告；F0直接复用，视觉backbone和vision head均冻结。
-6. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
+5. F3两档低LR候选已完成但未通过预注册主条件，不补三seed、不做Web对照、不进入F4；结果见第2.8节。
+6. 下一会话首先决定是否执行唯一一次F3b（projection LR `2e-5`/`5e-5`）。若执行，其余协议保持F3
+   不变且失败即结束文本分支；若不执行，则直接冻结F0 adapter-only为正式方案。
+7. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
    step须提前冻结，不能根据单个 seed 的结果选择性续跑。
-7. SAT 侧机制与正式结果完成后，冻结最终矩阵，再只替换 backbone domain/weights 和输出身份，
+8. SAT 侧机制与正式结果完成后，冻结最终矩阵，再只替换 backbone domain/weights 和输出身份，
    一次性运行对应 Web matched controls；不得用 Web 结果反向调整 SAT 方案。
 
 当前证据说明：SAT backbone 已包含有价值且不应被训练破坏的遥感视觉表征；在当前短预算下，最终
 embedding adapter 比直接微调25.33M参数的 dino.txt vision head 更有效，二者联合也未超过
-adapter-only。下一步不是放弃或微调 SAT backbone，而是在永久冻结 backbone 和 vision head 的前提
-下，以 adapter 为锚点检验 text projection 和少量 text blocks 的可控微调，把“能涨点”的 M4 现象
-推进为可解释、充分训练且可复现的 SAT 图文对齐方法。
+adapter-only；两档低LR text projection同样没有形成持续同域收益，只显示出RSICD保持与SkyScript
+主指标之间的权衡。下一步不是放弃或微调SAT backbone，也不是直接扩大到text blocks，而是选择一次
+有止损规则的F3b或直接进入F0正式长训练，把“短预算能涨点”的M4现象推进为充分训练、可复现的SAT
+图文对齐结论。
