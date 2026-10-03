@@ -16,6 +16,8 @@ from dinotxt_rs.evaluation.common import (
     validate_finite_metric,
 )
 
+RETRIEVAL_TIE_POLICY = "score_descending_then_candidate_index_ascending"
+
 
 def load_rsicd_records(
     path: Path, *, expected_split: str = "test"
@@ -131,11 +133,18 @@ def _ranks_from_positive_sets(
     chunk_size: int,
     device: torch.device,
 ) -> torch.Tensor:
+    """Return the best positive rank with deterministic, exact-score tie breaking.
+
+    Candidates are ordered by descending score, then ascending candidate index.
+    For multiple positives, choose the highest score and the lowest index among
+    positives sharing that score. No perturbation is added to the scores.
+    """
     if len(query_features) != len(positive_candidate_indices):
         raise ValueError("Every retrieval query needs a positive candidate set")
     if chunk_size <= 0:
         raise ValueError("Retrieval chunk_size must be positive")
     candidates = candidate_features.to(device)
+    candidate_indices = torch.arange(len(candidates), device=device)
     ranks: list[torch.Tensor] = []
     for offset in range(0, len(query_features), chunk_size):
         features = query_features[offset : offset + chunk_size].to(device)
@@ -146,9 +155,18 @@ def _ranks_from_positive_sets(
         ):
             if not positives:
                 raise ValueError("Retrieval query has no positive candidate")
-            positive_scores = scores[local_index, torch.tensor(positives, device=device)]
-            best_positive = positive_scores.max()
-            batch_ranks.append((scores[local_index] > best_positive).sum() + 1)
+            positive_indices = torch.tensor(positives, device=device)
+            query_scores = scores[local_index]
+            positive_scores = query_scores[positive_indices]
+            best_positive_score = positive_scores.max()
+            best_positive_index = positive_indices[
+                positive_scores == best_positive_score
+            ].min()
+            preceding_candidates = (query_scores > best_positive_score) | (
+                (query_scores == best_positive_score)
+                & (candidate_indices < best_positive_index)
+            )
+            batch_ranks.append(preceding_candidates.sum() + 1)
         ranks.append(torch.stack(batch_ranks).cpu())
     return torch.cat(ranks).to(torch.long)
 
@@ -227,6 +245,7 @@ def evaluate_rsicd_retrieval(
     return {
         "format_version": 1,
         "task": "rsicd_image_text_retrieval",
+        "tie_policy": RETRIEVAL_TIE_POLICY,
         "manifest": manifest_metadata(manifest),
         "model": evaluation_model.metadata,
         "split": split,
@@ -282,6 +301,7 @@ def evaluate_paired_retrieval(
     return {
         "format_version": 1,
         "task": "paired_image_text_global_retrieval",
+        "tie_policy": RETRIEVAL_TIE_POLICY,
         "manifest": manifest_metadata(manifest),
         "model": evaluation_model.metadata,
         "split": split.lower(),

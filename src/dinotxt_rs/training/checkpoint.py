@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import pickle
 import random
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,27 @@ import torch
 
 from dinotxt_rs.models.official_dinotxt import trainable_state_dict
 from dinotxt_rs.training.provenance import compare_run_identities
+
+
+def _temporary_file(destination: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".part", dir=destination.parent
+    )
+    os.close(descriptor)
+    return Path(name)
+
+
+def _stage_bytes(destination: Path, content: bytes) -> Path:
+    temporary = _temporary_file(destination)
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return temporary
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def save_checkpoint(
@@ -32,7 +56,6 @@ def save_checkpoint(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     destination = output_dir / (name or f"step_{step:07d}.pt")
-    temporary = destination.with_suffix(".pt.part")
     payload = {
         "format_version": 2,
         "step": step,
@@ -49,24 +72,172 @@ def save_checkpoint(
         "run_identity": run_identity,
         "config_toml": config_text,
     }
-    torch.save(payload, temporary)
-    os.replace(temporary, destination)
+    temporary = _temporary_file(destination)
+    try:
+        with temporary.open("wb") as handle:
+            torch.save(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination
 
 
 def save_best_checkpoint(output_dir: Path, source: Path) -> Path:
     """Atomically make best.pt reference an already-verified step checkpoint."""
+    output_dir.mkdir(parents=True, exist_ok=True)
     destination = output_dir / "best.pt"
-    temporary = destination.with_suffix(".pt.part")
+    temporary = _temporary_file(destination)
+    temporary.unlink()
     try:
-        os.link(source, temporary)
-    except OSError:
-        # A copied best checkpoint is still safe on filesystems without hard links.
-        with source.open("rb") as read_handle, temporary.open("wb") as write_handle:
-            while chunk := read_handle.read(8 * 1024 * 1024):
-                write_handle.write(chunk)
-    os.replace(temporary, destination)
+        try:
+            os.link(source, temporary)
+        except OSError:
+            # Never open a preexisting .part file: it may be a hard link to an old checkpoint.
+            with source.open("rb") as read_handle, temporary.open("xb") as write_handle:
+                while chunk := read_handle.read(8 * 1024 * 1024):
+                    write_handle.write(chunk)
+                write_handle.flush()
+                os.fsync(write_handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination
+
+
+def _matching_best_checkpoint(path: Path, step: int, identity: dict[str, Any]) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        # mmap avoids materializing large optimizer tensors just to inspect metadata.
+        payload = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+    except (OSError, RuntimeError, ValueError, EOFError, pickle.UnpicklingError):
+        return False
+    if (
+        not isinstance(payload, dict)
+        or payload.get("format_version") != 2
+        or type(payload.get("step")) is not int
+        or payload["step"] != step
+        or not isinstance(payload.get("run_identity"), dict)
+    ):
+        return False
+    blocking, _ = compare_run_identities(identity, payload["run_identity"])
+    return not blocking
+
+
+def prepare_resume_artifacts(
+    output_dir: Path,
+    step: int,
+    run_state: dict[str, Any],
+    resume_path: Path,
+    expected_identity: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate best state and archive logs beyond the restored optimizer step.
+
+    All input validation and best-source selection precede any artifact mutation. The
+    discarded records are published before log truncation, so an interrupted rollback
+    always leaves a recoverable copy. Individual replacements are atomic; this is not
+    a filesystem-wide transaction.
+    """
+    if type(step) is not int or step < 0:
+        raise ValueError("Resume artifact step must be a nonnegative integer")
+    logs: dict[str, dict[str, Any]] = {}
+    for filename in ("metrics.jsonl", "validation.jsonl", "fixed_monitor.jsonl"):
+        path = output_dir / filename
+        if not path.is_file():
+            continue
+        retained: list[str] = []
+        discarded: list[dict[str, Any]] = []
+        previous_step = -1
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"Invalid resume log JSON: {filename}:{line_number}") from error
+            log_step = record.get("step") if isinstance(record, dict) else None
+            if type(log_step) is not int or log_step < 0 or log_step <= previous_step:
+                raise ValueError(
+                    f"Resume log steps must be nonnegative, strictly increasing integers: "
+                    f"{filename}:{line_number}"
+                )
+            previous_step = log_step
+            if log_step <= step:
+                retained.append(line)
+            else:
+                discarded.append(record)
+        logs[filename] = {"retained": retained, "discarded": discarded}
+
+    best_step = run_state.get("best_validation_step")
+    best_source: Path | None = None
+    best_path = output_dir / "best.pt"
+    if best_step is None and best_path.exists():
+        raise ValueError("Restored run state has no best_validation_step but best.pt exists")
+    if best_step is not None:
+        if type(best_step) is not int or not 0 <= best_step <= step:
+            raise ValueError("Restored best_validation_step is invalid")
+        if not _matching_best_checkpoint(best_path, best_step, expected_identity):
+            for candidate in (resume_path, output_dir / f"step_{best_step:07d}.pt"):
+                if _matching_best_checkpoint(candidate, best_step, expected_identity):
+                    best_source = candidate
+                    break
+            if best_source is None:
+                raise ValueError(
+                    f"Cannot recover best.pt at restored best step {best_step} "
+                    "with matching identity"
+                )
+
+    discarded_logs = [
+        {"filename": filename, "records": contents["discarded"]}
+        for filename, contents in logs.items()
+        if contents["discarded"]
+    ]
+    archive_path = output_dir / "resume_discarded.jsonl"
+    staged: list[tuple[Path, Path]] = []
+    try:
+        if discarded_logs:
+            archive_content = archive_path.read_bytes() if archive_path.is_file() else b""
+            for line_number, line in enumerate(archive_content.splitlines(), 1):
+                try:
+                    archived_record = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid resume archive JSON at line {line_number}"
+                    ) from error
+                if not isinstance(archived_record, dict):
+                    raise ValueError(f"Invalid resume archive record at line {line_number}")
+            archive_record = {
+                "format_version": 1,
+                "resume_step": step,
+                "resume_checkpoint": str(resume_path.resolve()),
+                "logs": discarded_logs,
+            }
+            if archive_content and not archive_content.endswith(b"\n"):
+                archive_content += b"\n"
+            archive_content += (json.dumps(archive_record, ensure_ascii=False) + "\n").encode()
+            staged.append((_stage_bytes(archive_path, archive_content), archive_path))
+            for filename, contents in logs.items():
+                if contents["discarded"]:
+                    content = "".join(line + "\n" for line in contents["retained"]).encode()
+                    path = output_dir / filename
+                    staged.append((_stage_bytes(path, content), path))
+        # A failed best recovery must not truncate the live logs.
+        if best_source is not None:
+            save_best_checkpoint(output_dir, best_source)
+        for temporary, destination in staged:
+            os.replace(temporary, destination)
+    finally:
+        for temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
+    return {
+        "restored_step": step,
+        "best_validation_step": best_step,
+        "best_recovered_from": None if best_source is None else str(best_source.resolve()),
+        "discarded_records": {
+            filename: len(contents["discarded"]) for filename, contents in logs.items()
+        },
+        "discarded_archive": str(archive_path) if discarded_logs else None,
+    }
 
 
 def capture_rng_state() -> dict[str, Any]:

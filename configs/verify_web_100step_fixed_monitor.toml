@@ -37,3 +37,4 @@ queue_size = 4096
 fixed_monitor_every = 10
 log_every = 1
 checkpoint_every = 50
+checkpoint_policy = "numbered"

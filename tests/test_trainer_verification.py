@@ -148,6 +148,8 @@ def test_bounded_training_writes_finite_step_metrics_and_summary(tmp_path) -> No
             fixed_monitor_every=1,
             log_every=1,
             checkpoint_every=2,
+            checkpoint_policy="numbered",
+            validation_every=0,
         ),
         source=source,
     )
@@ -236,6 +238,7 @@ def test_validation_best_checkpoint_and_strict_resume(
             validation_every=1,
             log_every=1,
             checkpoint_every=1,
+            checkpoint_policy="numbered",
         ),
         source=source,
     )

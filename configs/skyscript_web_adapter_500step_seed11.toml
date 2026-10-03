@@ -43,3 +43,4 @@ validation_every = 50
 validation_at_start = true
 log_every = 1
 checkpoint_every = 50
+checkpoint_policy = "numbered"

@@ -140,8 +140,7 @@ def test_load_skyscript_gate_s2_config() -> None:
     assert stability.data.val_manifest == baseline.data.val_manifest
     assert stability.data.validation_batch_size == baseline.data.validation_batch_size
     assert (
-        stability.data.validation_forward_batch_size
-        == baseline.data.validation_forward_batch_size
+        stability.data.validation_forward_batch_size == baseline.data.validation_forward_batch_size
     )
     assert stability.data.validation_num_workers == baseline.data.validation_num_workers
     assert stability.data.validation_prefetch_factor == baseline.data.validation_prefetch_factor
@@ -165,3 +164,79 @@ def test_load_skyscript_gate_s2_config() -> None:
         "log_every",
     ):
         assert getattr(stability.train, field) == getattr(baseline.train, field)
+
+
+def test_load_new_three_epoch_skyscript_configs() -> None:
+    adapter = load_config(Path("configs/skyscript_sat_adapter_3epoch_seed11.toml"))
+    vision_head = load_config(Path("configs/skyscript_sat_visionhead_3epoch_seed11.toml"))
+
+    for config in (adapter, vision_head):
+        assert config.experiment.seed == 11
+        assert (
+            config.data.train_manifest.name
+            == "skyscript_images23_train_raw_unique36495_seed11_global77.jsonl"
+        )
+        assert config.data.val_manifest is not None
+        assert (
+            config.data.val_manifest.name
+            == "skyscript_images23_val_raw_unique4055_seed23_global77.jsonl"
+        )
+        assert config.data.validation_batch_size == 16
+        assert config.data.validation_forward_batch_size == 64
+        assert config.data.num_workers == 0
+        assert not config.data.train_augmentation
+        assert config.train.batch_size == 16
+        assert config.train.gradient_accumulation == 4
+        assert config.train.max_steps == 1710
+        assert config.train.warmup_steps == 171
+        assert config.train.validation_every == 200
+        assert config.train.validation_at_start
+        assert config.train.checkpoint_every == 200
+        assert config.train.checkpoint_policy == "rolling"
+        assert config.train.log_every == 10
+        assert config.experiment.output_dir.name == config.experiment.name
+
+    assert adapter.experiment.name == "skyscript_sat_adapter_3epoch_seed11"
+    assert adapter.model.image_adapter_bottleneck == 256
+    assert not adapter.model.train_vision_head
+    assert not adapter.model.train_text_projection
+
+    assert vision_head.experiment.name == "skyscript_sat_visionhead_3epoch_seed11"
+    assert vision_head.model.image_adapter_bottleneck == 0
+    assert vision_head.model.train_vision_head
+    assert not vision_head.model.train_text_projection
+    assert vision_head.model.vision_head_drop_path == 0.0
+
+
+def test_historical_configs_keep_numbered_checkpoint_policy() -> None:
+    rolling_configs = {
+        "skyscript_sat_adapter_3epoch_seed11.toml",
+        "skyscript_sat_visionhead_3epoch_seed11.toml",
+    }
+    configs = sorted(Path("configs").glob("*.toml"))
+    assert {
+        path.name for path in configs if load_config(path).train.checkpoint_policy == "rolling"
+    } == rolling_configs
+    assert all(
+        load_config(path).train.checkpoint_policy == "numbered"
+        for path in configs
+        if path.name not in rolling_configs
+    )
+
+
+def test_legacy_phase_runner_configs_are_numbered() -> None:
+    # These runners use fixed numbered resume boundaries. Keep their historical
+    # configs on numbered retention so a rolling run cannot silently replace them.
+    legacy_configs = (
+        "skyscript_sat_adapter_500step_seed11.toml",
+        "skyscript_sat_adapter_500step_seed23.toml",
+        "skyscript_sat_adapter_500step_seed47.toml",
+        "skyscript_sat_f1_visionhead_lr1e5_500step_seed11.toml",
+        "skyscript_sat_f1_visionhead_lr5e6_500step_seed11.toml",
+        "skyscript_sat_f2_adapter256_visionhead_lr1e5_500step_seed11.toml",
+        "skyscript_sat_f2_adapter256_visionhead_lr5e6_500step_seed11.toml",
+        "skyscript_sat_f3_adapter256_textproj_lr1e5_500step_seed11.toml",
+        "skyscript_sat_f3_adapter256_textproj_lr5e6_500step_seed11.toml",
+    )
+    for name in legacy_configs:
+        assert load_config(Path("configs") / name).train.checkpoint_policy == "numbered"

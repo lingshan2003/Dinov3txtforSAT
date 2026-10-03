@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ class ModelConfig:
     train_text_projection: bool = True
     train_logit_scale: bool = True
     image_adapter_bottleneck: int = 0
+    vision_head_drop_path: float | None = None
 
 
 @dataclass(frozen=True)
@@ -73,10 +75,11 @@ class TrainConfig:
     max_grad_norm: float = 1.0
     queue_size: int = 0
     fixed_monitor_every: int = 0
-    validation_every: int = 0
+    validation_every: int = 200
     validation_at_start: bool = True
     log_every: int = 10
-    checkpoint_every: int = 500
+    checkpoint_every: int = 200
+    checkpoint_policy: str = "rolling"
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,11 @@ def load_config(path: str | Path) -> Config:
             train_text_projection=bool(model.get("train_text_projection", True)),
             train_logit_scale=bool(model.get("train_logit_scale", True)),
             image_adapter_bottleneck=int(model.get("image_adapter_bottleneck", 0)),
+            vision_head_drop_path=(
+                None
+                if model.get("vision_head_drop_path") is None
+                else float(model["vision_head_drop_path"])
+            ),
         ),
         data=DataConfig(
             train_manifest=Path(data["train_manifest"]),
@@ -223,10 +231,19 @@ def load_config(path: str | Path) -> Config:
             max_grad_norm=float(train.get("max_grad_norm", 1.0)),
             queue_size=int(train.get("queue_size", 0)),
             fixed_monitor_every=int(train.get("fixed_monitor_every", 0)),
-            validation_every=int(train.get("validation_every", 0)),
+            validation_every=int(
+                train.get(
+                    "validation_every",
+                    200
+                    if data.get("val_manifest") is not None
+                    and train.get("checkpoint_policy", "rolling") == "rolling"
+                    else 0,
+                )
+            ),
             validation_at_start=bool(train.get("validation_at_start", True)),
             log_every=int(train.get("log_every", 10)),
-            checkpoint_every=int(train.get("checkpoint_every", 500)),
+            checkpoint_every=int(train.get("checkpoint_every", 200)),
+            checkpoint_policy=str(train.get("checkpoint_policy", "rolling")),
         ),
         source=source,
     )
@@ -243,6 +260,22 @@ def validate_config(config: Config) -> None:
         raise ValueError("model.text_last_k must be in [0, 24]")
     if config.model.image_adapter_bottleneck < 0:
         raise ValueError("model.image_adapter_bottleneck must be nonnegative")
+    if config.model.vision_head_drop_path is not None and not (
+        0 <= config.model.vision_head_drop_path < 1
+    ):
+        raise ValueError("model.vision_head_drop_path must be in [0, 1)")
+    if config.train.checkpoint_policy not in {"rolling", "numbered"}:
+        raise ValueError("train.checkpoint_policy must be rolling or numbered")
+    if config.train.checkpoint_policy == "rolling" and not config.train.validation_at_start:
+        raise ValueError("Rolling checkpoints require train.validation_at_start=true")
+    if config.train.checkpoint_policy == "rolling" and (
+        config.data.val_manifest is None or config.train.validation_every <= 0
+    ):
+        raise ValueError("Rolling checkpoints require a validation manifest and interval")
+    if config.train.max_grad_norm <= 0 or not math.isfinite(config.train.max_grad_norm):
+        raise ValueError("train.max_grad_norm must be finite and positive")
+    if config.train.warmup_steps < 0:
+        raise ValueError("train.warmup_steps must be nonnegative")
     if config.train.precision not in {"bf16", "fp16", "fp32"}:
         raise ValueError("train.precision must be bf16, fp16, or fp32")
     positive = {

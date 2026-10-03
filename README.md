@@ -34,3 +34,33 @@ tests/              # 单元与工程行为验证
 运行环境与当前数据重建步骤见[交接附录](docs/PREPARE_HANDOFF.md#12-操作附录)。旧脚本或配置仍留存不代表它们是当前推荐入口；尤其 `download_assets.sh all` 包含历史 ChatEarthNet 下载，不能作为 SkyScript 的准备命令。
 
 文档维护：研究问题变化更新科研文档，接口或开发规则变化更新架构，实验进度变化只更新交接。原 `SKYSCRIPT_ADAPTER_PREPARATION.md` 已并入交接，仅保留迁移链接；历史全文可通过 Git 追溯。
+
+## 训练与 checkpoint 保留
+
+新的正式 SkyScript SAT 训练默认每 200 step 验证一次，并在 step 0 和正常训练终点强制验证。验证指标写入输出目录的 `validation.jsonl`；训练指标写入 `metrics.jsonl`。当前 best 按验证 loss 选择。
+
+滚动保留策略固定使用三份 checkpoint：
+
+- `step_0000000.pt`：初始化权重与状态，用于比较训练前后表现。
+- `best.pt`：验证 loss 最低的权重与恢复状态。
+- `latest.pt`：最近一次 checkpoint，供中断后续训。
+
+训练按 200 step 的 checkpoint 间隔更新 `latest.pt`，best 改善时覆盖 `best.pt`，不会持续生成每次验证对应的编号 checkpoint。正常终点会额外验证并保存最终状态；如果终点模型不是 best，`latest.pt` 保留终点状态，`best.pt` 仍指向验证 loss 最低的模型。
+
+示例：
+
+```bash
+dinotxt-rs-train --config configs/skyscript_sat_adapter_3epoch_seed11.toml
+```
+
+从最近状态继续训练时，将 checkpoint 明确传给 `--resume`：
+
+```bash
+dinotxt-rs-train \
+  --config configs/skyscript_sat_adapter_3epoch_seed11.toml \
+  --resume outputs/skyscript_sat_adapter_3epoch_seed11/latest.pt
+```
+
+新配置使用 `checkpoint_policy = "rolling"`。历史阶段配置显式使用 `checkpoint_policy = "numbered"`，旧阶段脚本继续对应这些历史配置和编号 checkpoint。已有实验产物不会因新保留策略而删除。
+
+配置会参与 checkpoint 的严格身份校验。历史模板现在显式声明 `checkpoint_policy = "numbered"`，因此它们与早期运行时保存的配置内容不同。续跑已有实验时，使用该输出目录内保存的原始 `config.toml` 副本匹配 checkpoint 身份；不要直接用更新后的模板代替。需要注意，当前代码会把旧副本中缺失的 `checkpoint_policy` 解释为 `rolling`，所以用当前代码续跑时保存策略会转为滚动保留，不能继续依赖旧阶段脚本要求的编号边界。要复现旧的编号阶段工作流，需使用旧版本代码。已有历史 checkpoint 和其他实验产物保持原样，不会自动迁移或删除。

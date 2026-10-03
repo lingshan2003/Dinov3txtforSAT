@@ -5,11 +5,74 @@ import pytest
 import torch
 
 from dinotxt_rs.evaluation.retrieval import (
+    RETRIEVAL_TIE_POLICY,
+    _ranks_from_positive_sets,
     evaluate_paired_retrieval,
     load_paired_records,
     load_rsicd_records,
     retrieval_metrics,
 )
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, 256])
+def test_identical_features_follow_candidate_order_instead_of_perfect_recall(
+    chunk_size: int,
+) -> None:
+    features = torch.ones(12, 2)
+
+    metrics = retrieval_metrics(
+        features,
+        features,
+        text_to_image=list(range(12)),
+        device=torch.device("cpu"),
+        chunk_size=chunk_size,
+    )
+
+    for direction in ("image_to_text", "text_to_image"):
+        assert metrics[direction]["r1"] == pytest.approx(1 / 12)
+        assert metrics[direction]["r5"] == pytest.approx(5 / 12)
+        assert metrics[direction]["r10"] == pytest.approx(10 / 12)
+        assert metrics[direction]["mean_rank"] == pytest.approx(6.5)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 3, 256])
+def test_partial_ties_choose_best_positive_by_score_then_candidate_index(
+    chunk_size: int,
+) -> None:
+    # Identity candidates make query values the exact similarity scores.
+    query_features = torch.tensor(
+        [
+            [0.9, 0.8, 0.8, 0.7, 0.8],
+            [0.9, 0.8, 0.8, 0.8, 0.7],
+            [0.2, 0.8, 0.5, 0.7, 0.9],
+        ],
+        dtype=torch.float64,
+    )
+    ranks = _ranks_from_positive_sets(
+        query_features,
+        torch.eye(5, dtype=torch.float64),
+        # Positive order deliberately differs from candidate order.
+        [[4, 2], [3, 1], [0, 4]],
+        chunk_size=chunk_size,
+        device=torch.device("cpu"),
+    )
+
+    assert ranks.tolist() == [3, 2, 1]
+
+
+def test_distinct_scores_are_ranked_without_epsilon_tie_perturbation() -> None:
+    scores = torch.tensor(
+        [[1.0, 1.0 + 1e-12, 1.0 - 1e-12, 0.5]], dtype=torch.float64
+    )
+    ranks = _ranks_from_positive_sets(
+        scores,
+        torch.eye(4, dtype=torch.float64),
+        [[0, 3]],
+        chunk_size=1,
+        device=torch.device("cpu"),
+    )
+
+    assert ranks.tolist() == [2]
 
 
 def test_retrieval_metrics_handles_multiple_captions_per_image() -> None:
@@ -121,6 +184,7 @@ def test_evaluate_paired_retrieval_uses_manifest_row_positives(tmp_path, monkeyp
     )
 
     assert report["task"] == "paired_image_text_global_retrieval"
+    assert report["tie_policy"] == RETRIEVAL_TIE_POLICY
     assert report["positive_definition"] == "manifest_row_one_to_one"
     assert report["sources"] == ["SkyScript"]
     assert report["counts"] == {"images": 2, "captions": 2, "pairs": 2}

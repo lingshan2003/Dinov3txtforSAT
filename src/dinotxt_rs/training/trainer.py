@@ -17,7 +17,12 @@ from dinotxt_rs.config import Config
 from dinotxt_rs.data import ImageTextDataset, collate_image_text, make_transform
 from dinotxt_rs.losses import EmbeddingQueue, symmetric_contrastive_loss
 from dinotxt_rs.models import assert_visual_backbone_frozen, optimizer_parameter_groups
-from dinotxt_rs.training.checkpoint import load_checkpoint, save_best_checkpoint, save_checkpoint
+from dinotxt_rs.training.checkpoint import (
+    load_checkpoint,
+    prepare_resume_artifacts,
+    save_best_checkpoint,
+    save_checkpoint,
+)
 from dinotxt_rs.training.provenance import (
     build_provenance,
     run_identity,
@@ -78,8 +83,7 @@ def _checked_grad_norm(
         if not group_parameters:
             continue
         squared_norm = sum(
-            float(parameter.grad.detach().float().norm(2)) ** 2
-            for _, parameter in group_parameters
+            float(parameter.grad.detach().float().norm(2)) ** 2 for _, parameter in group_parameters
         )
         group_norm = math.sqrt(squared_norm)
         if not math.isfinite(group_norm):
@@ -127,9 +131,7 @@ def _set_training_mode(model: Any) -> None:
         return
     text_model.train(any(parameter.requires_grad for parameter in text_model.parameters()))
     text_backbone = text_model.backbone
-    text_backbone.train(
-        any(parameter.requires_grad for parameter in text_backbone.parameters())
-    )
+    text_backbone.train(any(parameter.requires_grad for parameter in text_backbone.parameters()))
     text_model.head.train(
         any(parameter.requires_grad for parameter in text_model.head.parameters())
     )
@@ -153,6 +155,7 @@ def _load_fixed_monitor_batch(config: Config) -> dict[str, Any] | None:
         dataset,
         batch_size=batch_size,
         shuffle=False,
+        generator=torch.Generator().manual_seed(config.experiment.seed + 2),
         num_workers=0,
         drop_last=False,
         collate_fn=collate_image_text,
@@ -238,6 +241,7 @@ def _load_validation_loader(
         "persistent_workers": num_workers > 0,
         "drop_last": False,
         "collate_fn": collate_image_text,
+        "generator": torch.Generator().manual_seed(config.experiment.seed + 1),
     }
     if prefetch_factor is not None:
         loader_kwargs["prefetch_factor"] = prefetch_factor
@@ -287,8 +291,7 @@ def _evaluate_validation(
                 if tokens.shape[0] != pixels.shape[0]:
                     raise RuntimeError(
                         "Validation tokenizer batch size does not match image batch size "
-                        "for samples: "
-                        + ", ".join(batch["ids"][:5])
+                        "for samples: " + ", ".join(batch["ids"][:5])
                     )
                 with _autocast(device, precision):
                     image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
@@ -350,6 +353,11 @@ def train(
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     model.to(device)
+    if config.model.vision_head_drop_path is not None:
+        head = getattr(model.visual_model, "head", None)
+        for block in getattr(head, "blocks", []):
+            if hasattr(block, "sample_drop_ratio"):
+                block.sample_drop_ratio = config.model.vision_head_drop_path
     _set_training_mode(model)
     assert_visual_backbone_frozen(model, require_eval=True)
 
@@ -365,6 +373,9 @@ def train(
         )
     fixed_monitor_batch = _load_fixed_monitor_batch(config)
     validation = _load_validation_loader(config, device)
+    rolling_checkpoints = config.train.checkpoint_policy == "rolling"
+    if rolling_checkpoints and (validation is None or not config.train.validation_at_start):
+        raise ValueError("Rolling checkpoints require validation including step zero")
     sampler = ResumableBatchSampler(
         dataset_size=len(dataset),
         batch_size=config.train.batch_size,
@@ -382,13 +393,11 @@ def train(
         collate_fn=collate_image_text,
         generator=loader_generator,
     )
-    optimizer_groups, optimizer_group_metadata, named_parameter_groups = (
-        optimizer_parameter_groups(model, config.train)
+    optimizer_groups, optimizer_group_metadata, named_parameter_groups = optimizer_parameter_groups(
+        model, config.train
     )
     named_parameters = [
-        named_parameter
-        for group in named_parameter_groups.values()
-        for named_parameter in group
+        named_parameter for group in named_parameter_groups.values() for named_parameter in group
     ]
     optimizer = torch.optim.AdamW(
         optimizer_groups,
@@ -412,8 +421,7 @@ def train(
     resume_history_path = output_dir / "resume_history.jsonl"
     optimizer_groups_path = output_dir / "optimizer_groups.json"
     print(
-        "optimizer_parameter_groups="
-        + json.dumps(optimizer_group_metadata, ensure_ascii=False),
+        "optimizer_parameter_groups=" + json.dumps(optimizer_group_metadata, ensure_ascii=False),
         flush=True,
     )
 
@@ -434,6 +442,7 @@ def train(
                 + ", ".join(existing)
             )
         config_snapshot_path.write_text(config_text, encoding="utf-8")
+        metrics_path.touch()
         provenance_path = write_provenance(config, provenance)
         _write_json_atomic(optimizer_groups_path, optimizer_group_metadata)
         print(f"provenance={provenance_path}", flush=True)
@@ -451,9 +460,7 @@ def train(
             raise ValueError(
                 "Refusing to resume without existing metrics, provenance, and optimizer groups"
             )
-        stored_optimizer_groups = json.loads(
-            optimizer_groups_path.read_text(encoding="utf-8")
-        )
+        stored_optimizer_groups = json.loads(optimizer_groups_path.read_text(encoding="utf-8"))
         if stored_optimizer_groups != optimizer_group_metadata:
             raise ValueError("Refusing to resume because optimizer parameter groups differ")
 
@@ -462,6 +469,7 @@ def train(
     micro_step = 0
     running_loss = 0.0
     running_in_batch_loss = 0.0
+    running_log_steps = 0
     optimizer_step_loss = 0.0
     optimizer_step_in_batch_loss = 0.0
     initial_loss: float | None = None
@@ -473,6 +481,9 @@ def train(
     initial_validation_loss: float | None = None
     final_validation_loss: float | None = None
     validation_evaluations = 0
+    last_validation_step: int | None = None
+    skipped_optimizer_steps = 0
+    consecutive_overflows = 0
     best_validation_loss: float | None = None
     best_validation_step: int | None = None
     best_checkpoint: Path | None = None
@@ -508,6 +519,9 @@ def train(
             raise ValueError("Resume checkpoint was taken during gradient accumulation")
         running_loss = float(run_state.get("running_loss", 0.0))
         running_in_batch_loss = float(run_state.get("running_in_batch_loss", 0.0))
+        running_log_steps = int(
+            run_state.get("running_log_steps", global_step % config.train.log_every)
+        )
         initial_loss = run_state.get("initial_loss")
         final_loss = run_state.get("final_loss")
         initial_in_batch_loss = run_state.get("initial_in_batch_loss")
@@ -517,6 +531,10 @@ def train(
         initial_validation_loss = run_state.get("initial_validation_loss")
         final_validation_loss = run_state.get("final_validation_loss")
         validation_evaluations = int(run_state.get("validation_evaluations", 0))
+        last_validation_step = run_state.get("last_validation_step")
+        skipped_optimizer_steps = int(run_state.get("skipped_optimizer_steps", 0))
+        if validation is not None and run_state.get("validation_generator_state") is not None:
+            validation[1].generator.set_state(run_state["validation_generator_state"])
         best_validation_loss = run_state.get("best_validation_loss")
         best_validation_step = run_state.get("best_validation_step")
         if best_validation_loss is not None:
@@ -524,8 +542,6 @@ def train(
         if best_validation_step is not None:
             best_validation_step = int(best_validation_step)
             best_checkpoint = output_dir / "best.pt"
-            if not best_checkpoint.is_file():
-                raise ValueError("Resume checkpoint references a missing best.pt")
         last_gradient_norm = run_state.get("last_gradient_norm")
         if last_gradient_norm is not None:
             last_gradient_norm = float(last_gradient_norm)
@@ -537,6 +553,9 @@ def train(
                 str(name): float(value) for name, value in restored_group_norms.items()
             }
         last_checkpoint_step = global_step
+        artifact_recovery = prepare_resume_artifacts(
+            output_dir, global_step, run_state, resumed_from, identity
+        )
         _append_jsonl(
             resume_history_path,
             {
@@ -547,6 +566,7 @@ def train(
                 "target_steps": config.train.max_steps,
                 "run_identity": identity,
                 "identity_check": identity_check,
+                "artifact_recovery": artifact_recovery,
             },
         )
         print(f"resumed_from={resumed_from} step={global_step}", flush=True)
@@ -578,12 +598,14 @@ def train(
             initial_validation_loss = float(validation_record["loss"])
             final_validation_loss = initial_validation_loss
             validation_evaluations = 1
+            last_validation_step = 0
 
     def checkpoint_run_state() -> dict[str, Any]:
         return {
             "micro_step": micro_step,
             "running_loss": running_loss,
             "running_in_batch_loss": running_in_batch_loss,
+            "running_log_steps": running_log_steps,
             "initial_loss": initial_loss,
             "final_loss": final_loss,
             "initial_in_batch_loss": initial_in_batch_loss,
@@ -593,13 +615,18 @@ def train(
             "initial_validation_loss": initial_validation_loss,
             "final_validation_loss": final_validation_loss,
             "validation_evaluations": validation_evaluations,
+            "last_validation_step": last_validation_step,
+            "skipped_optimizer_steps": skipped_optimizer_steps,
+            "validation_generator_state": (
+                None if validation is None else validation[1].generator.get_state()
+            ),
             "best_validation_loss": best_validation_loss,
             "best_validation_step": best_validation_step,
             "last_gradient_norm": last_gradient_norm,
             "last_group_gradient_norms": last_group_gradient_norms,
         }
 
-    def save_current_checkpoint() -> Path:
+    def save_current_checkpoint(name: str | None = None) -> Path:
         return save_checkpoint(
             output_dir,
             model=model,
@@ -614,6 +641,7 @@ def train(
             optimizer_parameter_groups=optimizer_group_metadata,
             step=global_step,
             config_text=config_text,
+            name=name,
         )
 
     if resume is None and validation is not None and initial_validation_loss is not None:
@@ -626,6 +654,12 @@ def train(
         initial_checkpoint = save_current_checkpoint()
         best_checkpoint = save_best_checkpoint(output_dir, initial_checkpoint)
         print(f"checkpoint={initial_checkpoint} best_checkpoint={best_checkpoint}", flush=True)
+        if rolling_checkpoints:
+            save_current_checkpoint("latest.pt")
+    elif resume is not None and rolling_checkpoints:
+        # A rollback starts a new continuation at the restored state. Do not
+        # leave latest.pt pointing into the discarded future branch.
+        save_current_checkpoint("latest.pt")
 
     start = time.monotonic()
     while global_step < target_steps:
@@ -661,7 +695,38 @@ def train(
                 continue
 
             scaler.unscale_(optimizer)
+            used_learning_rates = {group["name"]: group["lr"] for group in optimizer.param_groups}
             assert_visual_backbone_frozen(model, require_eval=True)
+            if scaler.is_enabled() and any(
+                parameter.grad is not None and not torch.isfinite(parameter.grad).all()
+                for _, parameter in named_parameters
+            ):
+                missing = [name for name, parameter in named_parameters if parameter.grad is None]
+                if missing:
+                    raise RuntimeError("No gradient was produced for: " + ", ".join(missing[:5]))
+                # GradScaler recorded the overflow during unscale_. Let it skip
+                # the update and reduce its scale without advancing the schedule.
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                skipped_optimizer_steps += 1
+                consecutive_overflows += 1
+                optimizer_step_loss = 0.0
+                optimizer_step_in_batch_loss = 0.0
+                print(
+                    json.dumps(
+                        {
+                            "event": "fp16_overflow",
+                            "step": global_step,
+                            "skipped_optimizer_steps": skipped_optimizer_steps,
+                            "scale": scaler.get_scale(),
+                        }
+                    ),
+                    flush=True,
+                )
+                if consecutive_overflows >= 32:
+                    raise FloatingPointError("32 consecutive FP16 optimizer updates overflowed")
+                continue
             last_gradient_norm, last_group_gradient_norms = _checked_grad_norm(
                 named_parameters,
                 named_parameter_groups,
@@ -669,10 +734,12 @@ def train(
             )
             scaler.step(optimizer)
             scaler.update()
+            consecutive_overflows = 0
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
             with torch.no_grad():
-                model.logit_scale.clamp_(0.0, math.log(100.0))
+                if model.logit_scale.requires_grad:
+                    model.logit_scale.clamp_(0.0, math.log(100.0))
             global_step += 1
             step_loss = optimizer_step_loss / config.train.gradient_accumulation
             step_in_batch_loss = optimizer_step_in_batch_loss / config.train.gradient_accumulation
@@ -685,6 +752,7 @@ def train(
             final_in_batch_loss = step_in_batch_loss
             running_loss += step_loss
             running_in_batch_loss += step_in_batch_loss
+            running_log_steps += 1
 
             if (
                 fixed_monitor_batch is not None
@@ -702,7 +770,10 @@ def train(
                 final_fixed_monitor_loss = float(fixed_monitor_record["loss"])
 
             improved_validation = False
-            if validation is not None and global_step % config.train.validation_every == 0:
+            if validation is not None and (
+                global_step % config.train.validation_every == 0
+                or global_step == config.train.max_steps
+            ):
                 _, validation_loader = validation
                 validation_record = _evaluate_validation(
                     model=model,
@@ -718,23 +789,24 @@ def train(
                 if initial_validation_loss is None:
                     initial_validation_loss = final_validation_loss
                 validation_evaluations += 1
+                last_validation_step = global_step
                 if best_validation_loss is None or final_validation_loss < best_validation_loss:
                     best_validation_loss = final_validation_loss
                     best_validation_step = global_step
                     best_checkpoint = output_dir / "best.pt"
                     improved_validation = True
-                print(
-                    "validation=" + json.dumps(validation_record, ensure_ascii=False), flush=True
-                )
+                print("validation=" + json.dumps(validation_record, ensure_ascii=False), flush=True)
 
-            if global_step % config.train.log_every == 0:
+            if global_step % config.train.log_every == 0 or global_step == target_steps:
                 elapsed = time.monotonic() - start
                 record = {
                     "step": global_step,
-                    "loss": running_loss / config.train.log_every,
-                    "in_batch_loss": running_in_batch_loss / config.train.log_every,
-                    "lr": scheduler.get_last_lr()[0],
-                    "learning_rates": {
+                    "loss": running_loss / running_log_steps,
+                    "in_batch_loss": running_in_batch_loss / running_log_steps,
+                    "averaged_optimizer_steps": running_log_steps,
+                    "lr": next(iter(used_learning_rates.values())),
+                    "learning_rates": used_learning_rates,
+                    "next_learning_rates": {
                         group["name"]: learning_rate
                         for group, learning_rate in zip(
                             optimizer.param_groups, scheduler.get_last_lr(), strict=True
@@ -744,6 +816,7 @@ def train(
                     "gradient_norm": last_gradient_norm,
                     "gradient_norms": last_group_gradient_norms,
                     "queue_size": len(queue),
+                    "skipped_optimizer_steps": skipped_optimizer_steps,
                     "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
                     "elapsed_seconds": elapsed,
                 }
@@ -751,24 +824,27 @@ def train(
                 print(json.dumps(record, ensure_ascii=False), flush=True)
                 running_loss = 0.0
                 running_in_batch_loss = 0.0
+                running_log_steps = 0
                 start = time.monotonic()
 
             if improved_validation:
-                path = save_current_checkpoint()
+                path = save_current_checkpoint("latest.pt" if rolling_checkpoints else None)
                 best_checkpoint = save_best_checkpoint(output_dir, path)
                 print(f"checkpoint={path} best_checkpoint={best_checkpoint}", flush=True)
                 last_checkpoint_step = global_step
             elif global_step % config.train.checkpoint_every == 0:
-                path = save_current_checkpoint()
+                path = save_current_checkpoint("latest.pt" if rolling_checkpoints else None)
                 print(f"checkpoint={path}", flush=True)
                 last_checkpoint_step = global_step
             if global_step >= target_steps:
                 break
 
     if global_step != last_checkpoint_step:
-        final_checkpoint = save_current_checkpoint()
+        final_checkpoint = save_current_checkpoint("latest.pt" if rolling_checkpoints else None)
     else:
-        final_checkpoint = output_dir / f"step_{global_step:07d}.pt"
+        final_checkpoint = output_dir / (
+            "latest.pt" if rolling_checkpoints else f"step_{global_step:07d}.pt"
+        )
     if (
         initial_loss is None
         or final_loss is None
@@ -781,12 +857,19 @@ def train(
     summary: dict[str, Any] = {
         "format_version": 2,
         "steps": global_step,
+        "device": str(device),
+        "log_every": config.train.log_every,
         "target_steps": config.train.max_steps,
         "completed": global_step == config.train.max_steps,
         "resumed_from": None if resumed_from is None else str(resumed_from),
         "samples_in_manifest": len(dataset),
         "batch_size": config.train.batch_size,
         "gradient_accumulation": config.train.gradient_accumulation,
+        "micro_steps": micro_step,
+        "skipped_optimizer_steps": skipped_optimizer_steps,
+        "checkpoint_policy": config.train.checkpoint_policy,
+        "log_at_end": True,
+        "vision_head_drop_path": config.model.vision_head_drop_path,
         "train_augmentation": config.data.train_augmentation,
         "shuffle_train": config.data.shuffle_train,
         "queue_size": config.train.queue_size,
@@ -807,7 +890,8 @@ def train(
         },
         "visual_backbone_permanently_frozen": True,
         "all_losses_finite": True,
-        "all_gradients_finite": True,
+        "all_gradients_finite": skipped_optimizer_steps == 0,
+        "all_applied_gradients_finite": True,
         "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
         "final_checkpoint": str(final_checkpoint),
     }
@@ -829,6 +913,8 @@ def train(
             "num_workers": _validation_loader_settings(config)[1],
             "every": config.train.validation_every,
             "evaluations": validation_evaluations,
+            "last_step": last_validation_step,
+            "validation_at_end": True,
             "initial_loss": initial_validation_loss,
             "final_loss": final_validation_loss,
             "best_loss": best_validation_loss,

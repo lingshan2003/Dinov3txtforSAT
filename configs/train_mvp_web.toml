@@ -33,3 +33,4 @@ max_grad_norm = 1.0
 queue_size = 4096
 log_every = 10
 checkpoint_every = 500
+checkpoint_policy = "numbered"

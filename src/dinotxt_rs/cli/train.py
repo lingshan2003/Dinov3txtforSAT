@@ -9,7 +9,7 @@ from dinotxt_rs.models import (
     configure_trainable_parameters,
     load_official_dinotxt,
 )
-from dinotxt_rs.training.trainer import train
+from dinotxt_rs.training.trainer import seed_everything, train
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +34,7 @@ def main() -> None:
     missing = [str(path) for path in required_paths(config) if not path.exists()]
     if missing:
         raise FileNotFoundError("Missing required paths:\n" + "\n".join(missing))
+    seed_everything(config.experiment.seed)
     model, tokenizer = load_official_dinotxt(
         config.model.dinov3_repo,
         config.model.backbone_weights,

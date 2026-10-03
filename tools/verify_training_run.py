@@ -129,10 +129,7 @@ def verify_training_run(
         raise ValueError("fixed_monitor_every must be positive")
     if require_validation and (expected_val_manifest_sha256 is None or validation_every is None):
         raise ValueError("Required validation needs its expected manifest SHA-256 and interval")
-    if (
-        expected_validation_loss_batch_size is not None
-        and expected_validation_loss_batch_size <= 0
-    ):
+    if expected_validation_loss_batch_size is not None and expected_validation_loss_batch_size <= 0:
         raise ValueError("expected_validation_loss_batch_size must be positive")
     if (
         expected_validation_forward_batch_size is not None
@@ -169,11 +166,26 @@ def verify_training_run(
         raise RuntimeError(f"Incomplete atomic output(s): {partials}")
 
     metrics = _read_metrics(metrics_path)
-    if len(metrics) != expected_steps:
-        raise ValueError(f"Expected {expected_steps} metric records, found {len(metrics)}")
-    expected_step_numbers = list(range(1, expected_steps + 1))
+    summary = _read_json(summary_path)
+    log_every = summary.get("log_every", 1)
+    if type(log_every) is not int or log_every <= 0:
+        raise ValueError("Summary log_every must be a positive integer")
+    expected_step_numbers = set(range(log_every, expected_steps + 1, log_every))
+    if summary.get("log_at_end"):
+        expected_step_numbers.add(expected_steps)
+    allowed_step_numbers = set(expected_step_numbers)
+    resume_history_path = output_dir / "resume_history.jsonl"
+    if summary.get("log_at_end") and resume_history_path.is_file():
+        allowed_step_numbers.update(
+            record.get("checkpoint_step") for record in _read_metrics(resume_history_path)
+        )
     step_numbers = [record.get("step") for record in metrics]
-    if step_numbers != expected_step_numbers:
+    if (
+        any(type(step) is not int or not 0 < step <= expected_steps for step in step_numbers)
+        or step_numbers != sorted(set(step_numbers))
+        or not expected_step_numbers.issubset(step_numbers)
+        or not set(step_numbers).issubset(allowed_step_numbers)
+    ):
         raise ValueError(f"Unexpected metric steps: {step_numbers[:5]} ... {step_numbers[-5:]}")
 
     losses: list[float] = []
@@ -187,11 +199,14 @@ def verify_training_run(
         )
         _finite(record.get("logit_scale"), f"metrics step {step} logit_scale")
         peak = record.get("peak_cuda_allocated_bytes")
-        if not isinstance(peak, int) or peak <= 0:
+        if peak is None and summary.get("device") == "cpu":
+            pass
+        elif not isinstance(peak, int) or peak <= 0:
             raise ValueError(
                 f"metrics step {step} peak_cuda_allocated_bytes must be a positive int"
             )
-        peak_bytes.append(peak)
+        else:
+            peak_bytes.append(peak)
         if require_in_batch_loss:
             in_batch_losses.append(
                 _finite(record.get("in_batch_loss"), f"metrics step {step} in_batch_loss")
@@ -211,6 +226,13 @@ def verify_training_run(
         raise ValueError("Summary must mark this run as intentionally incomplete")
     for field in ("all_losses_finite", "all_gradients_finite"):
         if summary.get(field) is not True:
+            if (
+                field == "all_gradients_finite"
+                and summary.get("all_applied_gradients_finite") is True
+                and type(summary.get("skipped_optimizer_steps")) is int
+                and summary["skipped_optimizer_steps"] > 0
+            ):
+                continue
             raise ValueError(f"Summary field {field} must be true")
     for field in ("initial_loss", "final_loss", "last_gradient_norm"):
         _finite(summary.get(field), f"summary {field}")
@@ -304,6 +326,12 @@ def verify_training_run(
             raise FileNotFoundError(f"Missing validation metrics: {validation_path}")
         validation_records = _read_metrics(validation_path)
         expected_validation_steps = list(range(0, expected_steps + 1, validation_every))
+        if (
+            summary.get("completed")
+            and summary.get("validation", {}).get("validation_at_end")
+            and expected_validation_steps[-1] != expected_steps
+        ):
+            expected_validation_steps.append(expected_steps)
         validation_steps = [record.get("step") for record in validation_records]
         if validation_steps != expected_validation_steps:
             raise ValueError(
@@ -400,9 +428,18 @@ def verify_training_run(
             best_checkpoint = Path.cwd() / best_checkpoint
         if not best_checkpoint.is_file() or best_checkpoint.stat().st_size == 0:
             raise FileNotFoundError(f"Best checkpoint is missing or empty: {best_checkpoint}")
-        best_source = output_dir / f"step_{best_step:07d}.pt"
-        if not best_source.is_file() or best_source.stat().st_size == 0:
-            raise FileNotFoundError(f"Best checkpoint source is missing or empty: {best_source}")
+        if summary.get("checkpoint_policy", "numbered") == "numbered":
+            best_source = output_dir / f"step_{best_step:07d}.pt"
+            if not best_source.is_file() or best_source.stat().st_size == 0:
+                raise FileNotFoundError(
+                    f"Best checkpoint source is missing or empty: {best_source}"
+                )
+        else:
+            import torch
+
+            payload = torch.load(best_checkpoint, map_location="cpu", weights_only=False, mmap=True)
+            if payload.get("step") != best_step:
+                raise ValueError("Rolling best checkpoint step differs from summary")
 
     resume_history: list[dict[str, Any]] = []
     resume_history_path = output_dir / "resume_history.jsonl"
@@ -484,7 +521,7 @@ def verify_training_run(
         "completed": summary.get("completed"),
         "loss": _series_summary(losses),
         "gradient_norm": _series_summary(gradient_norms),
-        "peak_cuda_allocated_bytes": max(peak_bytes),
+        "peak_cuda_allocated_bytes": max(peak_bytes) if peak_bytes else None,
         "final_queue_size": metrics[-1].get("queue_size"),
         "final_checkpoint": str(checkpoint),
         "required_checkpoints": required_checkpoints,
