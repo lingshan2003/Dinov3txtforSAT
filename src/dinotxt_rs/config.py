@@ -29,6 +29,10 @@ class ModelConfig:
     train_logit_scale: bool = True
     image_adapter_bottleneck: int = 0
     vision_head_drop_path: float | None = None
+    text_lora_rank: int = 0
+    text_lora_alpha: float = 16.0
+    text_lora_dropout: float = 0.0
+    text_lora_include_projection: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,6 +139,10 @@ def load_config(path: str | Path) -> Config:
                 if model.get("vision_head_drop_path") is None
                 else float(model["vision_head_drop_path"])
             ),
+            text_lora_rank=int(model.get("text_lora_rank", 0)),
+            text_lora_alpha=float(model.get("text_lora_alpha", 16.0)),
+            text_lora_dropout=float(model.get("text_lora_dropout", 0.0)),
+            text_lora_include_projection=bool(model.get("text_lora_include_projection", False)),
         ),
         data=DataConfig(
             train_manifest=Path(data["train_manifest"]),
@@ -260,6 +268,18 @@ def validate_config(config: Config) -> None:
         raise ValueError("model.text_last_k must be in [0, 24]")
     if config.model.image_adapter_bottleneck < 0:
         raise ValueError("model.image_adapter_bottleneck must be nonnegative")
+    if config.model.text_lora_rank < 0:
+        raise ValueError("model.text_lora_rank must be nonnegative")
+    if not math.isfinite(config.model.text_lora_alpha) or config.model.text_lora_alpha <= 0:
+        raise ValueError("model.text_lora_alpha must be finite and positive")
+    if not 0 <= config.model.text_lora_dropout < 1:
+        raise ValueError("model.text_lora_dropout must be in [0, 1)")
+    if config.model.text_lora_include_projection and config.model.text_lora_rank == 0:
+        raise ValueError("text_lora_include_projection requires a positive text_lora_rank")
+    if config.model.text_lora_rank > 0 and (
+        config.model.text_last_k or config.model.train_text_projection
+    ):
+        raise ValueError("Text LoRA cannot be combined with full text block/projection updates")
     if config.model.vision_head_drop_path is not None and not (
         0 <= config.model.vision_head_drop_path < 1
     ):

@@ -20,6 +20,7 @@ from dinotxt_rs.config import Config
 from dinotxt_rs.data import make_transform
 from dinotxt_rs.models import (
     add_image_embedding_adapter,
+    add_text_lora,
     configure_trainable_parameters,
     load_official_dinotxt,
 )
@@ -196,6 +197,13 @@ def load_evaluation_model(
     model = add_image_embedding_adapter(
         model, bottleneck_dim=config.model.image_adapter_bottleneck
     )
+    model = add_text_lora(
+        model,
+        rank=config.model.text_lora_rank,
+        alpha=config.model.text_lora_alpha,
+        dropout=config.model.text_lora_dropout,
+        include_projection=config.model.text_lora_include_projection,
+    )
     counts = configure_trainable_parameters(
         model,
         text_last_k=config.model.text_last_k,
@@ -203,6 +211,7 @@ def load_evaluation_model(
         train_text_projection=config.model.train_text_projection,
         train_logit_scale=config.model.train_logit_scale,
         train_image_adapter=config.model.image_adapter_bottleneck > 0,
+        train_text_lora=config.model.text_lora_rank > 0,
     )
     checkpoint_metadata = (
         None
@@ -240,6 +249,7 @@ def load_evaluation_model(
                 "sha256": input_hashes["bpe_vocab"],
             },
             "trainable_parameters": counts,
+            "text_lora": getattr(model, "text_lora_metadata", None),
             "checkpoint": checkpoint_metadata,
         },
     )

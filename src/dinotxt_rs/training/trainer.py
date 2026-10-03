@@ -413,6 +413,10 @@ def train(
     config_text = config.source.read_text(encoding="utf-8")
     provenance = build_provenance(config)
     provenance["optimizer_parameter_groups"] = optimizer_group_metadata
+    text_lora_metadata = getattr(model, "text_lora_metadata", None)
+    if text_lora_metadata is not None:
+        provenance["text_lora"] = text_lora_metadata
+        print("text_lora=" + json.dumps(text_lora_metadata, ensure_ascii=False), flush=True)
     identity = run_identity(config_text, provenance)
     config_snapshot_path = output_dir / "config.toml"
     metrics_path = output_dir / "metrics.jsonl"
@@ -894,6 +898,7 @@ def train(
         "all_applied_gradients_finite": True,
         "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
         "final_checkpoint": str(final_checkpoint),
+        "text_lora": text_lora_metadata,
     }
     if fixed_monitor_batch is not None:
         if initial_fixed_monitor_loss is None or final_fixed_monitor_loss is None:

@@ -53,6 +53,13 @@ tests/              # 单元与工程行为验证
 dinotxt-rs-train --config configs/skyscript_sat_adapter_3epoch_seed11.toml
 ```
 
+不带 adapter 的文本侧三轮对照已准备好：只训练 projection、只训练最后两层文本
+Transformer 和末端 LayerNorm，以及在全部文本层和 projection 上训练 LoRA。
+三组视觉侧均冻结，从官方权重重新初始化。
+在 tmux 会话中执行 `bash scripts/run_sat_text_3epoch_seed11.sh`，依次跑 projection、文本末两层和 LoRA；
+已完成的实验会跳过，中断的实验从 `latest.pt` 续跑。脚本记录验证 loss，完整检索评测另行执行。
+配置和启动说明见[交接中的当前实验协议](docs/PREPARE_HANDOFF.md#13-文本侧三轮训练启动)。
+
 从最近状态继续训练时，将 checkpoint 明确传给 `--resume`：
 
 ```bash

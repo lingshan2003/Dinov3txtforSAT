@@ -46,8 +46,11 @@ def configure_trainable_parameters(
     train_text_projection: bool,
     train_logit_scale: bool,
     train_image_adapter: bool = False,
+    train_text_lora: bool = False,
 ) -> dict[str, int]:
     """Apply one explicit freeze policy and return total/trainable parameter counts."""
+    if train_text_lora and (text_last_k or train_text_projection):
+        raise ValueError("Text LoRA must keep the original text blocks and projection frozen")
     for parameter in model.parameters():
         parameter.requires_grad_(False)
 
@@ -69,6 +72,17 @@ def configure_trainable_parameters(
     if train_text_projection:
         for parameter in model.text_model.head.parameters():
             parameter.requires_grad_(True)
+    if train_text_lora:
+        from .text_lora import LoRALinear
+
+        lora_modules = [
+            module for module in model.text_model.modules() if isinstance(module, LoRALinear)
+        ]
+        if not lora_modules:
+            raise ValueError("train_text_lora requires LoRA modules in the text tower")
+        for module in lora_modules:
+            module.lora_A.requires_grad_(True)
+            module.lora_B.requires_grad_(True)
     model.logit_scale.requires_grad_(train_logit_scale)
 
     image_adapter = getattr(model, "image_adapter", None)

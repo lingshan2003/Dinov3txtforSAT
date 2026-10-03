@@ -1,8 +1,17 @@
-# 最新交接：M4 与 SAT F1–F3 机制筛查完成，准备冻结正式实验路线
+# 最新交接：SAT 三轮视觉侧训练完成，准备无 adapter 文本侧对照
 
-更新时间：2026-10-02
+更新时间：2026-10-03
 
 ## 1. 一页结论
+
+当前进度：SAT adapter-only 和原有视觉 head-only 均完成 seed11、1710 step（3 epoch）训练，
+最终验证 loss 分别为 0.995599 和 1.572853，best 均在 step1710。完整检索评测尚未完成，
+不能把 loss 改善直接写成 retrieval 改善。详细证据见[三轮训练审阅](SAT_3EPOCH_ANALYSIS_2026-10-03.md)。
+
+用户决定继续开展三个无 adapter 文本侧对照：projection-only、最后两层 Transformer + ln_final，
+以及全部24层和 projection 的 LoRA。
+配置和顺序训练脚本已准备，尚未在真实 GPU 上启动。当前以充分训练各模块和后续统一检索比较为目标；
+下文 2026-10-02 短预算阶段的止损限制不再作为阻止这些实验的条件。
 
 项目当前已经得到一个可信的稳定基线：
 
@@ -20,11 +29,10 @@ Gate S0、S1、S2、M4-A 和 M4-B 均已通过，但这些 Gate 证明的是短�
 head/text encoder。Web 是天然兼容该对齐头的参照组和性能参考，不是替代 SAT 的后续研究主线。
 SAT 侧的 F1–F3 seed11 机制筛查也已完成：微调 dino.txt vision head、联合微调 vision head，或在
 adapter 上增加低学习率 text projection，都没有在预注册的同域主指标上稳定超过 adapter-only F0。
-因此当前正式实验首选仍是永久冻结视觉 backbone 与官方 dino.txt，只训练 image adapter。若还要继续
-文本侧开发，只允许在进入正式三 seed 前做一次有明确止损规则的高一档 projection-LR 筛查；不得直接
-进入 F4，也不得以 RSICD 单项改善替代 SkyScript 主指标。
+这些结论仅覆盖此前的 500-step 筛查。Adapter 继续作为参照；不能据此排除更充分训练后的原架构
+微调，也不将尚未完成检索评测的三轮训练视为最终候选已经确定。
 
-本轮同时冻结以下研究决策：
+2026-10-02 阶段记录的其他研究决策：
 
 1. 当前固定训练数据使用完整的 36,495 条 train，不再为了沿用旧的“10k / 50k”命名而人为切出
    10k 主实验。
@@ -778,20 +786,77 @@ python -m compileall -q src tools
 1. 把 M4 定位为 adapter-only、0.877 epoch 的三 seed 短预算机制证据，不写成充分训练的最终实验。
 2. 后续研究主线固定 SAT backbone；Web 只保留为通用 dino.txt 天然兼容参照。
 3. 显式 optimizer parameter groups、独立 LR、视觉 backbone 永久冻结断言和完整
-   provenance/checkpoint/resume 核验已经实现；不得新增 `vision_last_k`。
-4. F1/F2 seed11 mechanism screen 已完成，四个候选均未同时超过 F0；不为它们补三 seed 或 Web
-   对照。详细数值和结论见第2.7节。
-5. F3两档低LR候选已完成但未通过预注册主条件，不补三seed、不做Web对照、不进入F4；结果见第2.8节。
-6. 下一会话首先决定是否执行唯一一次F3b（projection LR `2e-5`/`5e-5`）。若执行，其余协议保持F3
-   不变且失败即结束文本分支；若不执行，则直接冻结F0 adapter-only为正式方案。
-7. 微调范围确定后，才建立1,710-step（3 epochs）F0/胜出候选三 seed正式实验；是否延长到2,850
-   step须提前冻结，不能根据单个 seed 的结果选择性续跑。
-8. SAT 侧机制与正式结果完成后，冻结最终矩阵，再只替换 backbone domain/weights 和输出身份，
-   一次性运行对应 Web matched controls；不得用 Web 结果反向调整 SAT 方案。
+   provenance/checkpoint/resume 核验已经实现。当前滚动策略保留 step0、best、latest，验证每200步及终点。
+4. F1–F3 的旧机制筛查结果见第2.7/2.8节，结论仅覆盖旧预算与配置。
+5. 新的 SAT adapter/head 两组三轮训练已完成，数据包审阅正常，完整检索尚未评测。
+6. 无 adapter 的 projection-only、text-last2 + ln_final，以及整个文本侧 LoRA 三组训练已准备，入口见第13节。
+   它们都从官方权重重新初始化，不加载 adapter/head 实验的 best。LoRA 已接入训练、恢复与评测加载。
+7. 对每组分别评测 step0 与 best 的 SkyScript-val 和 RSICD-val 完整检索，比较两个方向的 Recall。
+   暂不把低 validation loss 自动解释成高 mean recall，也不在检索前宣布正式方案已冻结。
+8. 选定候选后，再安排必要的多 seed 和 Web 对照；学习率搜索、扩大对比候选池及两侧联合更新
+   仍是待研究变量，不能由本轮单 seed 自动判定其效果。
 
-当前证据说明：SAT backbone 已包含有价值且不应被训练破坏的遥感视觉表征；在当前短预算下，最终
-embedding adapter 比直接微调25.33M参数的 dino.txt vision head 更有效，二者联合也未超过
-adapter-only；两档低LR text projection同样没有形成持续同域收益，只显示出RSICD保持与SkyScript
-主指标之间的权衡。下一步不是放弃或微调SAT backbone，也不是直接扩大到text blocks，而是选择一次
-有止损规则的F3b或直接进入F0正式长训练，把“短预算能涨点”的M4现象推进为充分训练、可复现的SAT
-图文对齐结论。
+## 13. 文本侧三轮训练启动
+
+三组实验的 seed、数据、batch、验证分组、步数和调度与新 head 三轮配置保持一致。
+
+| 配置 | 可训练模块 | 学习率 |
+| --- | --- | --- |
+| `configs/skyscript_sat_textproj_3epoch_seed11.toml` | 原有文本 projection；文本 backbone 冻结 | 1e-5 |
+| `configs/skyscript_sat_textlast2_3epoch_seed11.toml` | 最后两个文本 Transformer block + ln_final；projection 冻结 | 1e-5 |
+| `configs/skyscript_sat_textlora_3epoch_seed11.toml` | 全部24个文本 block 的 attention/MLP 与最终 projection 的 LoRA A/B | 1e-4 |
+
+三组均不创建 image adapter，视觉 backbone/head 与 logit scale 冻结。文本末两层实验是选中模块的全量更新，
+不是 LoRA，也不是重训整个文本 encoder。末端 LayerNorm 随 text_last_k 自动解冻，这是现有策略的一部分。
+共同预算：1710 step、warmup171、cosine decay；物理 batch16、累积4、queue0、BF16、无训练增强；
+每200步及 step0/终点验证，best 按验证 loss 选。学习率是首轮尝试的设置，不代表已经找到各模块最佳 LR。
+
+LoRA 使用 rank8、alpha16（缩放alpha/rank=2）、dropout0，覆盖每层的
+`attention.qkv`、`attention.proj`、`feed_forward.fc1`、`feed_forward.fc2`，以及
+`text_model.head.linear_projection`；共97个插入点、194个可训练张量。
+官方1280维/FFN4倍/24层/2048维输出配置对应3,958,784个新增可训练参数。
+所有原有权重（包括 embedding、各 LayerNorm、projection 基础矩阵）冻结。A随机初始化、B置零，
+step0 保持原始映射；只保存 A/B，不合并进基础权重，恢复和评测时先重建原模型再插入同样 LoRA。
+这组同时检验跨全部文本层和输出投影的整体适配，不能把结果单独归因于“层数增加”或“LoRA算法”；
+它与末两层全量更新的范围、参数化和学习率都不同。
+
+插入位置按照固定上游提交的[文本 block](https://github.com/facebookresearch/dinov3/blob/6876159a11b4df116f30f667f8c9888617df0751/dinov3/layers/block.py)
+与[文本 head](https://github.com/facebookresearch/dinov3/blob/6876159a11b4df116f30f667f8c9888617df0751/dinov3/eval/text/text_tower.py)核对。
+如果加载后的结构不符，会明确失败，避免只给少数层插入而误报“全层LoRA”。
+由于梯度经过24层，LoRA的较少可训练参数不能保证其耗时/激活显存低于末两层全量微调；
+实际峰值和吞吐需要服务器日志确认。
+
+更新服务器仓库后，在空闲 GPU 上开 tmux，顺序跑 projection、text-last2、text-LoRA：
+
+```bash
+cd /root/autodl-tmp/Dinov3txtforSAT
+tmux new -s sat-text-3epoch
+bash scripts/run_sat_text_3epoch_seed11.sh
+```
+
+`Ctrl-b` 再按 `d` 可脱离；重新进入用 `tmux attach -t sat-text-3epoch`。脚本直接使用项目 `.venv/bin/python`，
+设置有效的 OMP/MKL 线程数，不需要另行激活环境。三组 `train.log` 位于各自 `outputs/<实验名>/`。
+脚本不启动检索评测。若进程异常退出，修复原因后重新执行同一脚本：已完成实验跳过，其余从 latest 续训。
+如果中断早于第一个 latest 保存点，脚本会停止并说明；检查后可用已保存配置显式从 step0 恢复：
+
+```bash
+.venv/bin/python -u -m dinotxt_rs.cli.train \
+  --config outputs/skyscript_sat_textproj_3epoch_seed11/config.toml \
+  --resume outputs/skyscript_sat_textproj_3epoch_seed11/step_0000000.pt \
+  2>&1 | tee -a outputs/skyscript_sat_textproj_3epoch_seed11/train.log
+```
+
+如中断的是其他组，把上面的实验目录改为相应的 text-last2 或 text-LoRA 目录。
+恢复前确认原进程已经结束，避免同一目录被两个进程同时使用。三组完成后，按第1节链接报告的同样协议
+补 step0/best 检索；先前的 adapter/head 也仍需评测。完成训练后下载报告可以使用：
+
+```bash
+tar --exclude='*.pt' --exclude='*.part' -czf sat_text_3epoch_reports.tar.gz \
+  outputs/skyscript_sat_textproj_3epoch_seed11 \
+  outputs/skyscript_sat_textlast2_3epoch_seed11 \
+  outputs/skyscript_sat_textlora_3epoch_seed11
+```
+
+本地没有官方权重、上游 checkout 或 CUDA GPU；配置解析、现有冻结/训练测试与脚本编排可在本地验证，
+真实权重加载与实际显存成本需要由服务器三次运行确认。CPU测试验证了全层LoRA梯度、原始权重冻结
+和轻量权重重建；训练/评测入口也使用同一插入与冻结策略。
