@@ -1,16 +1,34 @@
-# 最新交接：SAT 五组三轮训练与完整检索评测完成
+# 最新交接：九组三轮训练与检索完成，adapter + LoRA为当前主候选
 
 更新时间：2026-10-04
 
-下一轮已准备四组视觉/文本联合适配配置和顺序训练脚本，尚未在GPU启动。
+用户已选择继续复现adapter+LoRA、adapter-only、head+LoRA。新增seed23/47各三组配置和
+`scripts/run_sat_replications_3epoch.sh`已准备，尚未在服务器启动；默认六组训练后自动评测24份检索并打包。
+Seed11保留作第三个seed，原数据划分、1710step预算和学习率不变，不开展随机head实验。
+启动、恢复与下载方式见[三seed复现计划](SAT_REPLICATION_PLAN_2026-10-04.md)。
+
+已审阅用户上传的`sat_joint_3epoch_reports.tar.gz`：四组均完整训练1710step，
+验证loss持续下降，best均在1710，无跳过更新或日志异常，配置和优化器范围符合设计。
+四组分别是adapter + 全文本LoRA（含projection）、vision head + 全文本LoRA（含projection）、
+adapter + projection全量更新、vision head + projection全量更新。
+终点验证loss依次为0.902339、1.088776、0.994999、1.506328。
+Adapter+LoRA比adapter-only的loss低9.37%；adapter+projection仅低0.06%，暂没有有力额外收益。
+后续16份联合检索报告现已审阅，来源为`sat_joint_3epoch_retrieval_reports.tar.gz`。
+Adapter+LoRA的SkyScript/RSICD mean Recall为10.884%/7.044%，相对adapter-only提高1.200/0.366pp，
+当前九组中两项mean Recall最高；RSICD图→文R@1却从2.102%降到1.737%，不能声称全面领先。
+Head+LoRA为无adapter配置中mean Recall最高（6.663%/5.098%），adapter+projection整体近乎持平。
+报告完整、step0与旧五组指标一致，全部联合身份检查match；没有实际权重或逐查询rank，仍是单seed开发验证。
+当前主候选为adapter+LoRA，保留adapter-only和head+LoRA作重要参照；已准备上述多seed复现，后续检查方向指标和检索定性诊断，尚未启动新训练或最终test。
+最新详细结论见[联合完整检索审阅](SAT_JOINT_3EPOCH_RETRIEVAL_ANALYSIS_2026-10-04.md)，
+训练过程及历史评测命令见[联合三轮训练审阅](SAT_JOINT_3EPOCH_ANALYSIS_2026-10-04.md)。
 完整15种可用组合、adapter机制假设与首批启动方式见[联合实验计划](SAT_JOINT_EXPERIMENT_PLAN_2026-10-04.md)。
 
 ## 1. 一页结论
 
-当前进度：五组seed11、1710step（3 epoch）训练和step0/best的SkyScript-val、RSICD-val完整检索均已完成。
-Adapter在两项数据的六个Recall子指标均领先，mean Recall分别为9.684%/6.679%；无adapter路线中，
+当前进度：九组seed11、1710step（3 epoch）训练和step0/best的SkyScript-val、RSICD-val完整检索均已完成，共36份检索JSON。
+历史五组单侧比较中，Adapter在两项数据的六个Recall子指标均领先，mean Recall分别为9.684%/6.679%；当时无adapter路线中，
 全层文本LoRA的mean Recall为4.624%/3.876%，视觉head为3.042%/3.659%。
-共同step0分别仅0.115%/0.469%，因此适配明显改善检索，但最强adapter的SkyScript R@1仍仅1.90%/2.93%。
+共同step0分别仅0.115%/0.469%，因此适配明显改善检索。最新adapter+LoRA的SkyScript R@1仍仅2.76%/3.50%，绝对对齐能力仍弱。
 这是单seed开发验证结果，尚未完成最终test或本轮同预算Web控制组。
 详细结果和下一轮建议见[五组完整检索审阅](SAT_3EPOCH_RETRIEVAL_ANALYSIS_2026-10-04.md)。
 

@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 from dinotxt_rs.config import load_config
@@ -211,7 +212,13 @@ def test_load_new_three_epoch_skyscript_configs() -> None:
 def test_historical_configs_keep_numbered_checkpoint_policy() -> None:
     rolling_configs = {
         "skyscript_sat_adapter_3epoch_seed11.toml",
+        "skyscript_sat_adapter_3epoch_seed23.toml",
+        "skyscript_sat_adapter_3epoch_seed47.toml",
         "skyscript_sat_visionhead_3epoch_seed11.toml",
+        "skyscript_sat_adapter_textlora_3epoch_seed23.toml",
+        "skyscript_sat_adapter_textlora_3epoch_seed47.toml",
+        "skyscript_sat_visionhead_textlora_3epoch_seed23.toml",
+        "skyscript_sat_visionhead_textlora_3epoch_seed47.toml",
         "skyscript_sat_textlast2_3epoch_seed11.toml",
         "skyscript_sat_textproj_3epoch_seed11.toml",
         "skyscript_sat_textlora_3epoch_seed11.toml",
@@ -229,6 +236,36 @@ def test_historical_configs_keep_numbered_checkpoint_policy() -> None:
         for path in configs
         if path.name not in rolling_configs
     )
+
+
+def test_three_epoch_sat_seed_replicates_only_change_experiment_identity() -> None:
+    configs_dir = Path("configs")
+    trials = ("adapter_textlora", "adapter", "visionhead_textlora")
+    for trial in trials:
+        baseline_path = configs_dir / f"skyscript_sat_{trial}_3epoch_seed11.toml"
+        baseline = tomllib.loads(baseline_path.read_text())
+        baseline_experiment = baseline.pop("experiment")
+        assert baseline_experiment["seed"] == 11
+        assert "resume" not in baseline_experiment
+
+        for seed in (23, 47):
+            name = f"skyscript_sat_{trial}_3epoch_seed{seed}"
+            replication_path = configs_dir / f"{name}.toml"
+            replication = tomllib.loads(replication_path.read_text())
+            experiment = replication.pop("experiment")
+
+            assert replication == baseline
+            assert experiment == {
+                "name": name,
+                "seed": seed,
+                "output_dir": f"outputs/{name}",
+            }
+            assert "seed11" not in experiment["output_dir"]
+            assert "resume" not in experiment
+
+            loaded = load_config(replication_path)
+            assert loaded.experiment.seed == seed
+            assert loaded.experiment.output_dir.name == name
 
 
 def test_legacy_phase_runner_configs_are_numbered() -> None:

@@ -1,6 +1,10 @@
 # SAT 视觉与文本联合适配：组合空间与首批实验
 
-目标仍是提高SAT图像与文本的匹配，视觉backbone永久冻结。本次准备联合适配配置，从同一官方权重重新初始化；不直接resume已有adapter或LoRA的best来改变训练范围。新组合尚未在真实GPU上运行。
+目标仍是提高SAT图像与文本的匹配，视觉backbone永久冻结。本次联合适配配置从同一官方权重重新初始化；不直接resume已有adapter或LoRA的best来改变训练范围。
+
+最新状态（2026-10-04）：首批四组联合训练报告已审阅，均完整完成1710step，best均为终点。
+Adapter+全文本LoRA验证loss最低（0.902339），后续完整检索也已审阅：两数据集mean Recall为10.884%/7.044%，当前九组最高，但RSICD图→文R@1低于adapter-only。
+最新结论见[联合完整检索审阅](SAT_JOINT_3EPOCH_RETRIEVAL_ANALYSIS_2026-10-04.md)；训练与历史tmux检索命令见[联合三轮训练审阅](SAT_JOINT_3EPOCH_ANALYSIS_2026-10-04.md)。下文保留实验设计、启动与打包命令作为复现记录。
 
 ## 组合空间
 

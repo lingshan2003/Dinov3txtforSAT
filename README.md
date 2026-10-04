@@ -60,9 +60,17 @@ Transformer 和末端 LayerNorm，以及在全部文本层和 projection 上训�
 已完成的实验会跳过，中断的实验从 `latest.pt` 续跑。脚本记录验证 loss，完整检索评测另行执行。
 配置和启动说明见[交接中的当前实验协议](docs/PREPARE_HANDOFF.md#13-文本侧三轮训练协议与复现入口)。
 
-视觉与文本联合适配首批四组已准备：adapter/head分别搭配projection/全层文本LoRA。
+视觉与文本联合适配首批四组已完成训练并审阅：adapter/head分别搭配projection/全层文本LoRA。
 在tmux中运行 `bash scripts/run_sat_joint_3epoch_seed11.sh`；组合矩阵、训练范围与启动方式见
 [联合实验计划](docs/SAT_JOINT_EXPERIMENT_PLAN_2026-10-04.md)。
+完整检索已审阅，adapter+全文本LoRA当前在九组中的两数据集mean Recall最高，但RSICD图→文R@1存在取舍。
+最新结论见[联合完整检索审阅](docs/SAT_JOINT_3EPOCH_RETRIEVAL_ANALYSIS_2026-10-04.md)，
+训练记录与tmux评测命令见[联合三轮训练审阅](docs/SAT_JOINT_3EPOCH_ANALYSIS_2026-10-04.md)。
+
+三个候选的多seed复现已准备：保留seed11，新增seed23/47共六组。
+在tmux中执行 `bash scripts/run_sat_replications_3epoch.sh`，默认训练后自动完成两项数据集的
+step0/best检索，并生成`outputs/sat_replications_3epoch_reports.tar.gz`（不含权重）。
+支持断点恢复和跳过已完成产物；协议、启动和下载说明见[三seed复现计划](docs/SAT_REPLICATION_PLAN_2026-10-04.md)。
 
 从最近状态继续训练时，将 checkpoint 明确传给 `--resume`：
 

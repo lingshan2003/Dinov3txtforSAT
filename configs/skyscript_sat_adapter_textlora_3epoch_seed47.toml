@@ -1,0 +1,58 @@
+# Joint SAT alignment: adapter and textlora; visual backbone permanently frozen.
+[experiment]
+name = "skyscript_sat_adapter_textlora_3epoch_seed47"
+seed = 47
+output_dir = "outputs/skyscript_sat_adapter_textlora_3epoch_seed47"
+
+[model]
+dinov3_repo = "external/dinov3"
+backbone_domain = "sat"
+backbone_weights = "assets/checkpoints/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth"
+dinotxt_weights = "assets/checkpoints/dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth"
+bpe_vocab = "assets/checkpoints/bpe_simple_vocab_16e6.txt.gz"
+image_size = 224
+text_last_k = 0
+train_vision_head = false
+train_text_projection = false
+train_logit_scale = false
+image_adapter_bottleneck = 256
+vision_head_drop_path = 0.0
+text_lora_rank = 8
+text_lora_alpha = 16.0
+text_lora_dropout = 0.0
+text_lora_include_projection = true
+
+[data]
+train_manifest = "assets/data/manifests/skyscript_images23_train_raw_unique36495_seed11_global77.jsonl"
+val_manifest = "assets/data/manifests/skyscript_images23_val_raw_unique4055_seed23_global77.jsonl"
+validation_batch_size = 16
+validation_forward_batch_size = 64
+validation_num_workers = 4
+validation_prefetch_factor = 4
+num_workers = 0
+train_augmentation = false
+shuffle_train = true
+
+[train]
+device = "cuda"
+precision = "bf16"
+batch_size = 16
+gradient_accumulation = 4
+max_steps = 1710
+warmup_steps = 171
+learning_rate = 0.0001
+weight_decay = 0.01
+image_adapter_learning_rate = 0.0001
+image_adapter_weight_decay = 0.01
+text_projection_learning_rate = 0.0001
+text_backbone_learning_rate = 0.0001
+text_projection_weight_decay = 0.01
+text_backbone_weight_decay = 0.01
+
+max_grad_norm = 1.0
+queue_size = 0
+validation_every = 200
+validation_at_start = true
+log_every = 10
+checkpoint_every = 200
+checkpoint_policy = "rolling"
