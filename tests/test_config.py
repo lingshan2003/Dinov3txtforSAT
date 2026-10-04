@@ -215,6 +215,10 @@ def test_historical_configs_keep_numbered_checkpoint_policy() -> None:
         "skyscript_sat_textlast2_3epoch_seed11.toml",
         "skyscript_sat_textproj_3epoch_seed11.toml",
         "skyscript_sat_textlora_3epoch_seed11.toml",
+        "skyscript_sat_adapter_textlora_3epoch_seed11.toml",
+        "skyscript_sat_visionhead_textlora_3epoch_seed11.toml",
+        "skyscript_sat_adapter_textproj_3epoch_seed11.toml",
+        "skyscript_sat_visionhead_textproj_3epoch_seed11.toml",
     }
     configs = sorted(Path("configs").glob("*.toml"))
     assert {

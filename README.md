@@ -58,7 +58,11 @@ Transformer 和末端 LayerNorm，以及在全部文本层和 projection 上训�
 三组视觉侧均冻结，从官方权重重新初始化。
 在 tmux 会话中执行 `bash scripts/run_sat_text_3epoch_seed11.sh`，依次跑 projection、文本末两层和 LoRA；
 已完成的实验会跳过，中断的实验从 `latest.pt` 续跑。脚本记录验证 loss，完整检索评测另行执行。
-配置和启动说明见[交接中的当前实验协议](docs/PREPARE_HANDOFF.md#13-文本侧三轮训练启动)。
+配置和启动说明见[交接中的当前实验协议](docs/PREPARE_HANDOFF.md#13-文本侧三轮训练协议与复现入口)。
+
+视觉与文本联合适配首批四组已准备：adapter/head分别搭配projection/全层文本LoRA。
+在tmux中运行 `bash scripts/run_sat_joint_3epoch_seed11.sh`；组合矩阵、训练范围与启动方式见
+[联合实验计划](docs/SAT_JOINT_EXPERIMENT_PLAN_2026-10-04.md)。
 
 从最近状态继续训练时，将 checkpoint 明确传给 `--resume`：
 

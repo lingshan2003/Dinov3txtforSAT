@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts/run_sat_text_3epoch_seed11.sh"
 TRIALS = (
@@ -18,6 +20,18 @@ TRIALS = (
     "skyscript_sat_textlast2_3epoch_seed11",
     "skyscript_sat_textlora_3epoch_seed11",
 )
+
+
+@pytest.fixture(autouse=True, params=["text", "joint"])
+def runner_variant(request, monkeypatch):
+    if request.param == "joint":
+        module = sys.modules[__name__]
+        monkeypatch.setattr(module, "RUNNER", ROOT / "scripts/run_sat_joint_3epoch_seed11.sh")
+        monkeypatch.setattr(module, "TRIALS", tuple(
+            f"skyscript_sat_{name}_3epoch_seed11" for name in (
+                "adapter_textlora", "visionhead_textlora", "adapter_textproj", "visionhead_textproj"
+            )
+        ))
 
 
 def _fake_project(tmp_path: Path) -> tuple[Path, Path]:
@@ -110,7 +124,7 @@ def _calls(log: Path) -> list[str]:
     return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
-def test_runs_all_three_text_controls_in_order(tmp_path: Path) -> None:
+def test_runs_all_controls_in_order(tmp_path: Path) -> None:
     project, log = _fake_project(tmp_path)
 
     result = _run(project, log)
@@ -140,7 +154,7 @@ def test_latest_checkpoint_resumes_and_completed_run_is_skipped(tmp_path: Path) 
 
     assert result.returncode == 0, result.stderr
     calls = _calls(log)
-    assert [line.split()[0] for line in calls] == [first, TRIALS[2]]
+    assert [line.split()[0] for line in calls] == [first, *TRIALS[2:]]
     assert "--resume outputs/" + first + "/latest.pt" in calls[0]
     assert "Already completed: " + second in result.stdout
 

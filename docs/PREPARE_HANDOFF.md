@@ -1,16 +1,24 @@
-# 最新交接：SAT 三轮视觉侧训练完成，准备无 adapter 文本侧对照
+# 最新交接：SAT 五组三轮训练与完整检索评测完成
 
-更新时间：2026-10-03
+更新时间：2026-10-04
+
+下一轮已准备四组视觉/文本联合适配配置和顺序训练脚本，尚未在GPU启动。
+完整15种可用组合、adapter机制假设与首批启动方式见[联合实验计划](SAT_JOINT_EXPERIMENT_PLAN_2026-10-04.md)。
 
 ## 1. 一页结论
 
-当前进度：SAT adapter-only 和原有视觉 head-only 均完成 seed11、1710 step（3 epoch）训练，
-最终验证 loss 分别为 0.995599 和 1.572853，best 均在 step1710。完整检索评测尚未完成，
-不能把 loss 改善直接写成 retrieval 改善。详细证据见[三轮训练审阅](SAT_3EPOCH_ANALYSIS_2026-10-03.md)。
+当前进度：五组seed11、1710step（3 epoch）训练和step0/best的SkyScript-val、RSICD-val完整检索均已完成。
+Adapter在两项数据的六个Recall子指标均领先，mean Recall分别为9.684%/6.679%；无adapter路线中，
+全层文本LoRA的mean Recall为4.624%/3.876%，视觉head为3.042%/3.659%。
+共同step0分别仅0.115%/0.469%，因此适配明显改善检索，但最强adapter的SkyScript R@1仍仅1.90%/2.93%。
+这是单seed开发验证结果，尚未完成最终test或本轮同预算Web控制组。
+详细结果和下一轮建议见[五组完整检索审阅](SAT_3EPOCH_RETRIEVAL_ANALYSIS_2026-10-04.md)。
 
-用户决定继续开展三个无 adapter 文本侧对照：projection-only、最后两层 Transformer + ln_final，
-以及全部24层和 projection 的 LoRA。
-配置和顺序训练脚本已准备，尚未在真实 GPU 上启动。当前以充分训练各模块和后续统一检索比较为目标；
+三个无 adapter 文本侧对照也均已完成1710step：projection-only、最后两层Transformer + ln_final，
+以及全部24层和projection的LoRA，最终验证loss分别为2.457213、2.258260、1.327784。
+LoRA参数分组覆盖全部97个插入点，只更新194个A/B张量，日志显示有训练信号；三组best均在终点。
+此前训练阶段的详细审阅与评测复现命令见[文本侧三轮训练审阅](SAT_TEXT_3EPOCH_ANALYSIS_2026-10-04.md)。
+当前以充分训练各模块和后续统一检索比较为目标；
 下文 2026-10-02 短预算阶段的止损限制不再作为阻止这些实验的条件。
 
 项目当前已经得到一个可信的稳定基线：
@@ -788,15 +796,18 @@ python -m compileall -q src tools
 3. 显式 optimizer parameter groups、独立 LR、视觉 backbone 永久冻结断言和完整
    provenance/checkpoint/resume 核验已经实现。当前滚动策略保留 step0、best、latest，验证每200步及终点。
 4. F1–F3 的旧机制筛查结果见第2.7/2.8节，结论仅覆盖旧预算与配置。
-5. 新的 SAT adapter/head 两组三轮训练已完成，数据包审阅正常，完整检索尚未评测。
-6. 无 adapter 的 projection-only、text-last2 + ln_final，以及整个文本侧 LoRA 三组训练已准备，入口见第13节。
+5. 新的SAT五组三轮训练和20份完整检索报告均已完成并审阅，结果见第1节最新链接。
+6. 无 adapter 的 projection-only、text-last2 + ln_final，以及整个文本侧LoRA三组训练已完成并审阅，入口见第13节。
    它们都从官方权重重新初始化，不加载 adapter/head 实验的 best。LoRA 已接入训练、恢复与评测加载。
-7. 对每组分别评测 step0 与 best 的 SkyScript-val 和 RSICD-val 完整检索，比较两个方向的 Recall。
-   暂不把低 validation loss 自动解释成高 mean recall，也不在检索前宣布正式方案已冻结。
+7. 五组step0检索指标逐项一致，best均为step1710；adapter领先，全层LoRA是当前无adapter的mean Recall优先候选。
+   RSICD上LoRA和head的mean Recall差仅0.216pp，且方向性排序不一致；不由单seed宣布算法显著优劣。
 8. 选定候选后，再安排必要的多 seed 和 Web 对照；学习率搜索、扩大对比候选池及两侧联合更新
    仍是待研究变量，不能由本轮单 seed 自动判定其效果。
 
-## 13. 文本侧三轮训练启动
+## 13. 文本侧三轮训练协议与复现入口
+
+截至2026-10-04三组已在RTX3090上完成，报告审阅未发现明显训练异常。
+本节保留启动/恢复协议供复现使用；完整检索也已完成，当前下一步建议见第1节最新检索报告。
 
 三组实验的 seed、数据、batch、验证分组、步数和调度与新 head 三轮配置保持一致。
 
@@ -847,8 +858,8 @@ bash scripts/run_sat_text_3epoch_seed11.sh
 ```
 
 如中断的是其他组，把上面的实验目录改为相应的 text-last2 或 text-LoRA 目录。
-恢复前确认原进程已经结束，避免同一目录被两个进程同时使用。三组完成后，按第1节链接报告的同样协议
-补 step0/best 检索；先前的 adapter/head 也仍需评测。完成训练后下载报告可以使用：
+恢复前确认原进程已经结束，避免同一目录被两个进程同时使用。复现实验时，训练后按第1节链接报告的协议
+补step0/best检索。本次五组检索已经完成；复现训练后下载训练报告可以使用：
 
 ```bash
 tar --exclude='*.pt' --exclude='*.part' -czf sat_text_3epoch_reports.tar.gz \
@@ -857,6 +868,7 @@ tar --exclude='*.pt' --exclude='*.part' -czf sat_text_3epoch_reports.tar.gz \
   outputs/skyscript_sat_textlora_3epoch_seed11
 ```
 
-本地没有官方权重、上游 checkout 或 CUDA GPU；配置解析、现有冻结/训练测试与脚本编排可在本地验证，
-真实权重加载与实际显存成本需要由服务器三次运行确认。CPU测试验证了全层LoRA梯度、原始权重冻结
-和轻量权重重建；训练/评测入口也使用同一插入与冻结策略。
+本地没有官方权重、上游checkout或CUDA GPU；CPU测试验证了全层LoRA梯度、原始权重冻结和轻量权重重建。
+服务器真实运行已完成，三组Torch峰值allocated分别为3.923/4.268/5.667GiB（projection/last2/LoRA）。
+本地上传包均只含报告、不含checkpoint。后续服务器检索已记录权重成功加载及配置/资产核验，
+但本地没有直接重放评测或对真实权重做差分。
