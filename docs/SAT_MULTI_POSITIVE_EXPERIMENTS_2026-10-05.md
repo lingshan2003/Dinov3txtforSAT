@@ -1,6 +1,6 @@
 # SAT 多正例实验：实施与启动（2026-10-05）
 
-本轮继续使用 adapter256＋全文本 LoRA rank8，永久冻结 SAT backbone 和原视觉 head。训练集按完整 caption 组恢复图片；保留原 unique-val 的 loss 与 best 选择规则，新增同文多图检索。当前本地无完整 CSV、图像、官方权重或 CUDA GPU，以下为已实现的服务器运行流程，未实际启动 GPU 实验。
+本轮继续使用 adapter256＋全文本 LoRA rank8，永久冻结 SAT backbone 和原视觉 head。训练集按完整 caption 组恢复图片；保留原 unique-val 的 loss 与 best 选择规则，新增同文多图检索。现已确认本地根目录有原始CSV和ZIP并生成候选上传包；服务器固定manifest仍只在服务器，完整模型运行资产与CUDA GPU未在本地配置，未实际启动GPU实验。
 
 ## 实验矩阵
 
@@ -18,6 +18,8 @@ B 与 C 的 batch 组数不同，因此 B→C 的差异包含 batch 构成和目
 **1710step 不表示恢复后图片池的三个 image epoch。** 新采样器的 group epoch 是每个 caption 组访问一次，尾部不足完整 batch 的组本轮丢弃，下一轮重新洗牌；组内图像循环轮换。每个 batch 优先完整填满16条，单例组贡献一张图，其余组贡献至多两张；若只剩一个空位则该组本次只取一张，保证同组不跨 batch。充分覆盖新图片池的预算需依据恢复数量和本轮覆盖日志另行确定，1710不是后续训练上限。
 
 ## 1. 恢复图片清单
+
+服务器空间有限时，优先使用[已生成的本地候选上传包及安装流程](SKYSCRIPT_LOCAL_BUNDLE_2026-10-05.md)：只需上传约5.94GB包，安装工具从旧清单推断原图片目录，复用已有代表图并生成分组manifest。以下直接CSV准备方式适用于已在服务器拥有原始素材的情况。
 
 服务器先保留原两份 unique 清单及原图目录。使用**此前同一 top30 筛选版本的完整候选 CSV**，不要输入已压缩为40,550行的一图一文 selection CSV，也不要直接输入未经 top30 筛选的其它版本。工具读取 `filepath` 和 `title_raw`，默认仅 images2/images3；它不重新执行 top30 评分筛选。
 

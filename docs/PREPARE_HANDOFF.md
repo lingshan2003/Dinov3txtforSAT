@@ -2,6 +2,14 @@
 
 更新时间：2026-10-05
 
+本地根目录现已找到原始两份top30 CSV、images2.zip和images3.zip，用户希望在本地筛选打包以节省服务器空间。
+已从polished版流式生成 `outputs/skyscript_polished_top30_images23_candidates_v1.zip`，
+370,317张图、40,550caption组，约5.94GB；两个原ZIP共约19.43GB。图片字节保持不变，读取使用ZIP自带CRC，未新增SHA验证。
+本地缺少服务器固定train/val清单，包内保留候选池，不重建split。新增安装器从服务器原清单推断图片root，
+复用已有代表图，只恢复已知组图片并生成分组manifest。两个CSV差异、实际包路径及安装命令见
+[本地候选上传包](SKYSCRIPT_LOCAL_BUNDLE_2026-10-05.md)。尚未上传或在服务器安装／启动新训练。
+补充上传包／安装器后全量341项测试通过，Ruff与diff检查通过。实际本地包的ZIP目录计数、字节数及压缩方式与审计匹配。
+
 用户已授权新一轮多正例实验代码，已实现可选 caption-group 数据、分组采样与图像轮换、
 均匀多正例 loss 和同组非对角线屏蔽对照，原配置仍默认 rows／single_positive。
 新三组为 adapter+LoRA 的 rotate／multipos／maskpos，seed11、固定1710step，从官方权重开始，
