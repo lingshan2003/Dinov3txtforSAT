@@ -5,12 +5,15 @@ from pathlib import Path
 
 from dinotxt_rs.config import load_config
 from dinotxt_rs.evaluation.common import load_evaluation_model, write_json_atomic
-from dinotxt_rs.evaluation.retrieval import evaluate_paired_retrieval
+from dinotxt_rs.evaluation.retrieval import (
+    evaluate_caption_group_retrieval,
+    evaluate_paired_retrieval,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Evaluate one-to-one global image/text retrieval on SkyScript"
+        description="Evaluate global image/text retrieval on SkyScript"
     )
     parser.add_argument("--config", required=True, help="Exact model/training TOML")
     parser.add_argument("--manifest", required=True, type=Path)
@@ -21,6 +24,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--retrieval-chunk-size", type=int, default=256)
     parser.add_argument("--split", choices=("train", "val", "test"), default="val")
+    parser.add_argument(
+        "--positive-definition",
+        choices=("one-to-one", "caption-group"),
+        default="one-to-one",
+        help="caption-group requires group_id and deduplicates caption candidates by group",
+    )
     return parser.parse_args()
 
 
@@ -33,7 +42,12 @@ def main() -> None:
         checkpoint=args.checkpoint,
         training_output=args.training_output,
     )
-    report = evaluate_paired_retrieval(
+    evaluate = (
+        evaluate_caption_group_retrieval
+        if args.positive_definition == "caption-group"
+        else evaluate_paired_retrieval
+    )
+    report = evaluate(
         model,
         args.manifest,
         batch_size=args.batch_size,

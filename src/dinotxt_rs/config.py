@@ -52,6 +52,8 @@ class DataConfig:
     num_workers: int = 8
     train_augmentation: bool = True
     shuffle_train: bool = True
+    caption_sampling: str = "rows"
+    images_per_caption: int = 1
     fixed_monitor_manifest: Path | None = None
     fixed_monitor_batch_size: int | None = None
 
@@ -78,6 +80,7 @@ class TrainConfig:
     logit_scale_weight_decay: float | None = None
     max_grad_norm: float = 1.0
     queue_size: int = 0
+    contrastive_objective: str = "single_positive"
     fixed_monitor_every: int = 0
     validation_every: int = 200
     validation_at_start: bool = True
@@ -170,6 +173,8 @@ def load_config(path: str | Path) -> Config:
             num_workers=int(data.get("num_workers", 8)),
             train_augmentation=bool(data.get("train_augmentation", True)),
             shuffle_train=bool(data.get("shuffle_train", True)),
+            caption_sampling=str(data.get("caption_sampling", "rows")),
+            images_per_caption=int(data.get("images_per_caption", 1)),
             fixed_monitor_manifest=_path(data.get("fixed_monitor_manifest")),
             fixed_monitor_batch_size=(
                 None
@@ -238,6 +243,7 @@ def load_config(path: str | Path) -> Config:
             ),
             max_grad_norm=float(train.get("max_grad_norm", 1.0)),
             queue_size=int(train.get("queue_size", 0)),
+            contrastive_objective=str(train.get("contrastive_objective", "single_positive")),
             fixed_monitor_every=int(train.get("fixed_monitor_every", 0)),
             validation_every=int(
                 train.get(
@@ -260,6 +266,31 @@ def load_config(path: str | Path) -> Config:
 
 
 def validate_config(config: Config) -> None:
+    if config.data.caption_sampling not in {"rows", "caption_group"}:
+        raise ValueError("data.caption_sampling must be rows or caption_group")
+    if not 1 <= config.data.images_per_caption <= config.train.batch_size:
+        raise ValueError("data.images_per_caption must be in [1, train.batch_size]")
+    if config.train.contrastive_objective not in {
+        "single_positive", "multi_positive", "mask_same_caption"
+    }:
+        raise ValueError("Unknown train.contrastive_objective")
+    if config.data.caption_sampling == "rows" and config.data.images_per_caption != 1:
+        raise ValueError("images_per_caption requires caption_group sampling")
+    if config.train.contrastive_objective != "single_positive" and (
+        config.data.caption_sampling != "caption_group" or config.data.images_per_caption < 2
+    ):
+        raise ValueError("Group objectives require caption_group sampling with >=2 images")
+    if config.data.caption_sampling == "caption_group":
+        if config.train.queue_size != 0:
+            raise ValueError("Caption-group training currently requires queue_size=0")
+        if config.data.images_per_caption > 1 and (
+            config.train.contrastive_objective == "single_positive"
+        ):
+            raise ValueError("Multiple images per caption require a group-aware objective")
+        if config.data.num_workers != 0 or config.data.train_augmentation:
+            raise ValueError(
+                "First caption-group protocol requires num_workers=0 and no augmentation"
+            )
     if config.model.backbone_domain not in {"web", "sat"}:
         raise ValueError("model.backbone_domain must be 'web' or 'sat'")
     if config.model.image_size <= 0 or config.model.image_size % 16:

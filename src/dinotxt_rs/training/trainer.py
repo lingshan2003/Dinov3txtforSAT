@@ -5,6 +5,7 @@ import math
 import os
 import random
 import time
+from collections import Counter
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,12 @@ from torch.utils.data import DataLoader
 
 from dinotxt_rs.config import Config
 from dinotxt_rs.data import ImageTextDataset, collate_image_text, make_transform
-from dinotxt_rs.losses import EmbeddingQueue, symmetric_contrastive_loss
+from dinotxt_rs.data.image_text import validate_caption_groups
+from dinotxt_rs.losses import (
+    EmbeddingQueue,
+    symmetric_contrastive_loss,
+    symmetric_group_contrastive_loss,
+)
 from dinotxt_rs.models import assert_visual_backbone_frozen, optimizer_parameter_groups
 from dinotxt_rs.training.checkpoint import (
     load_checkpoint,
@@ -29,7 +35,10 @@ from dinotxt_rs.training.provenance import (
     sha256_file,
     write_provenance,
 )
-from dinotxt_rs.training.sampler import ResumableBatchSampler
+from dinotxt_rs.training.sampler import (
+    ResumableBatchSampler,
+    ResumableCaptionGroupBatchSampler,
+)
 
 
 def seed_everything(seed: int) -> None:
@@ -205,6 +214,32 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _update_group_diagnostics(state: dict[str, Any], groups: list[str]) -> None:
+    counts = Counter(groups)
+    positive_counts = [counts[group] for group in groups]
+    state["micro_batches"] = state.get("micro_batches", 0) + 1
+    state["unique_captions"] = state.get("unique_captions", 0) + len(counts)
+    state["queries"] = state.get("queries", 0) + len(groups)
+    state["positive_pairs"] = state.get("positive_pairs", 0) + sum(positive_counts)
+    histogram = state.setdefault("positive_count_histogram", {})
+    for count in positive_counts:
+        key = str(count)
+        histogram[key] = histogram.get(key, 0) + 1
+
+
+def _group_diagnostics_report(state: dict[str, Any]) -> dict[str, Any]:
+    batches, queries = state["micro_batches"], state["queries"]
+    pairs = state["positive_pairs"]
+    return {
+        "micro_batches": batches,
+        "mean_unique_captions": state["unique_captions"] / batches,
+        "mean_positives_per_query": pairs / queries,
+        "mean_off_diagonal_positives": (pairs - queries) / batches,
+        "singleton_query_fraction": state["positive_count_histogram"].get("1", 0) / queries,
+        "positive_count_histogram": dict(state["positive_count_histogram"]),
+    }
+
+
 def _validation_loader_settings(config: Config) -> tuple[int, int, int | None]:
     """Resolve the independent forward/I/O settings for deterministic validation."""
     loss_batch_size = config.data.validation_batch_size
@@ -373,15 +408,40 @@ def train(
         )
     fixed_monitor_batch = _load_fixed_monitor_batch(config)
     validation = _load_validation_loader(config, device)
+    group_ids: list[str] | None = None
+    if config.data.caption_sampling == "caption_group":
+        group_ids = validate_caption_groups(dataset.records, split="train")
+        if validation is not None:
+            validation_records = validation[0].records
+            val_groups = {" ".join(row["caption"].split()).casefold()
+                          for row in validation_records}
+            if len(val_groups) != len(validation_records):
+                raise ValueError("Group training retains the unique-caption validation protocol")
+            if set(group_ids) & val_groups:
+                raise ValueError("Training and validation caption groups overlap")
+            train_images = {Path(row["image"]).resolve() for row in dataset.records}
+            val_images = {Path(row["image"]).resolve() for row in validation_records}
+            if train_images & val_images or (
+                {row["id"] for row in dataset.records}
+                & {row["id"] for row in validation_records}
+            ):
+                raise ValueError("Training and validation images or sample ids overlap")
     rolling_checkpoints = config.train.checkpoint_policy == "rolling"
     if rolling_checkpoints and (validation is None or not config.train.validation_at_start):
         raise ValueError("Rolling checkpoints require validation including step zero")
-    sampler = ResumableBatchSampler(
-        dataset_size=len(dataset),
-        batch_size=config.train.batch_size,
-        shuffle=config.data.shuffle_train,
-        seed=config.experiment.seed,
-    )
+    if group_ids is None:
+        sampler = ResumableBatchSampler(
+            dataset_size=len(dataset), batch_size=config.train.batch_size,
+            shuffle=config.data.shuffle_train, seed=config.experiment.seed,
+        )
+    else:
+        sampler = ResumableCaptionGroupBatchSampler(
+            group_ids=group_ids, batch_size=config.train.batch_size,
+            images_per_group=config.data.images_per_caption,
+            shuffle=config.data.shuffle_train, seed=config.experiment.seed,
+        )
+    if not sampler.batches_per_epoch:
+        raise ValueError("Sampler cannot produce a full physical batch")
     loader_generator = torch.Generator()
     loader_generator.manual_seed(config.experiment.seed)
     loader = DataLoader(
@@ -474,6 +534,8 @@ def train(
     running_loss = 0.0
     running_in_batch_loss = 0.0
     running_log_steps = 0
+    group_diagnostics: dict[str, Any] = {}
+    seen_training_indices: set[int] = set()
     optimizer_step_loss = 0.0
     optimizer_step_in_batch_loss = 0.0
     initial_loss: float | None = None
@@ -526,6 +588,17 @@ def train(
         running_log_steps = int(
             run_state.get("running_log_steps", global_step % config.train.log_every)
         )
+        group_diagnostics = run_state.get("group_diagnostics", {})
+        if not isinstance(group_diagnostics, dict):
+            raise ValueError("Checkpoint group diagnostics are invalid")
+        if group_ids is not None:
+            seen_indices = run_state.get("seen_training_indices")
+            if not isinstance(seen_indices, list) or any(
+                type(index) is not int or not 0 <= index < len(dataset)
+                for index in seen_indices
+            ):
+                raise ValueError("Checkpoint seen training indices are invalid")
+            seen_training_indices = set(seen_indices)
         initial_loss = run_state.get("initial_loss")
         final_loss = run_state.get("final_loss")
         initial_in_batch_loss = run_state.get("initial_in_batch_loss")
@@ -610,6 +683,8 @@ def train(
             "running_loss": running_loss,
             "running_in_batch_loss": running_in_batch_loss,
             "running_log_steps": running_log_steps,
+            "group_diagnostics": group_diagnostics,
+            "seen_training_indices": sorted(seen_training_indices),
             "initial_loss": initial_loss,
             "final_loss": final_loss,
             "initial_in_batch_loss": initial_in_batch_loss,
@@ -679,19 +754,34 @@ def train(
                 )
             with _autocast(device, config.train.precision):
                 image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
-                loss_output = symmetric_contrastive_loss(
-                    image_features, text_features, logit_scale, queue=queue
-                )
+                if config.train.contrastive_objective == "single_positive":
+                    loss_output = symmetric_contrastive_loss(
+                        image_features, text_features, logit_scale, queue=queue
+                    )
+                else:
+                    loss_output = symmetric_group_contrastive_loss(
+                        image_features, text_features, logit_scale, batch["group_ids"],
+                        objective=config.train.contrastive_objective,
+                    )
                 _assert_finite_loss(loss_output.loss, batch["ids"])
                 loss = loss_output.loss / config.train.gradient_accumulation
             with torch.no_grad():
-                in_batch_loss = symmetric_contrastive_loss(
-                    image_features, text_features, logit_scale, queue=None
-                ).loss
+                if config.train.contrastive_objective == "single_positive":
+                    in_batch_loss = symmetric_contrastive_loss(
+                        image_features, text_features, logit_scale, queue=None
+                    ).loss
+                else:
+                    in_batch_loss = symmetric_group_contrastive_loss(
+                        image_features, text_features, logit_scale, batch["group_ids"],
+                        objective=config.train.contrastive_objective,
+                    ).loss
                 _assert_finite_loss(in_batch_loss, batch["ids"])
             scaler.scale(loss).backward()
             queue.enqueue(image_features, text_features)
             sampler.advance()
+            if group_ids is not None:
+                _update_group_diagnostics(group_diagnostics, batch["group_ids"])
+                seen_training_indices.update(batch["indices"])
             optimizer_step_loss += float(loss_output.loss.detach())
             optimizer_step_in_batch_loss += float(in_batch_loss)
             micro_step += 1
@@ -824,11 +914,20 @@ def train(
                     "peak_cuda_allocated_bytes": _peak_cuda_allocated_bytes(device),
                     "elapsed_seconds": elapsed,
                 }
+                if group_diagnostics:
+                    record["caption_group_diagnostics"] = _group_diagnostics_report(
+                        group_diagnostics
+                    )
+                    record["unique_training_images_seen"] = len(seen_training_indices)
+                    record["training_image_pool_coverage"] = (
+                        len(seen_training_indices) / len(dataset)
+                    )
                 _append_jsonl(metrics_path, record)
                 print(json.dumps(record, ensure_ascii=False), flush=True)
                 running_loss = 0.0
                 running_in_batch_loss = 0.0
                 running_log_steps = 0
+                group_diagnostics = {}
                 start = time.monotonic()
 
             if improved_validation:
@@ -877,6 +976,9 @@ def train(
         "train_augmentation": config.data.train_augmentation,
         "shuffle_train": config.data.shuffle_train,
         "queue_size": config.train.queue_size,
+        "contrastive_objective": config.train.contrastive_objective,
+        "caption_sampling": config.data.caption_sampling,
+        "images_per_caption": config.data.images_per_caption,
         "initial_loss": initial_loss,
         "final_loss": final_loss,
         "initial_in_batch_loss": initial_in_batch_loss,
@@ -900,6 +1002,21 @@ def train(
         "final_checkpoint": str(final_checkpoint),
         "text_lora": text_lora_metadata,
     }
+    if group_ids is not None:
+        group_counts = Counter(group_ids)
+        summary["caption_groups"] = {
+            "count": len(group_counts),
+            "singleton_groups": sum(count == 1 for count in group_counts.values()),
+            "max_images_per_group": max(group_counts.values()),
+            "epoch_definition": "one_visit_per_caption_group_not_all_images",
+            "completed_group_epochs": sampler.epoch,
+            "current_epoch_batch_offset": sampler.batch_offset,
+            "sample_exposures": micro_step * config.train.batch_size,
+            "unique_images_seen": len(seen_training_indices),
+            "image_pool_coverage": len(seen_training_indices) / len(dataset),
+            "unique_caption_groups_seen": len({group_ids[index]
+                                              for index in seen_training_indices}),
+        }
     if fixed_monitor_batch is not None:
         if initial_fixed_monitor_loss is None or final_fixed_monitor_loss is None:
             raise RuntimeError("Fixed monitor was configured but did not produce a result")
@@ -927,6 +1044,7 @@ def train(
             "best_checkpoint": None if best_checkpoint is None else str(best_checkpoint),
             "selection_includes_step_zero": config.train.validation_at_start,
             "all_losses_finite": True,
+            "positive_definition": "manifest_row_one_to_one",
         }
     summary_path = _write_json_atomic(output_dir / "training_summary.json", summary)
     return summary_path

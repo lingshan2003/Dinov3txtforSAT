@@ -63,14 +63,49 @@ class ImageTextDataset(Dataset):
         except Exception as exc:
             message = f"Failed to read image for sample {record['id']}: {image_path}"
             raise RuntimeError(message) from exc
-        return {"pixels": pixels, "caption": record["caption"], "id": record["id"]}
+        sample = {"pixels": pixels, "caption": record["caption"], "id": record["id"]}
+        if "group_id" in record:
+            sample["group_id"] = record["group_id"]
+            sample["index"] = index
+        return sample
 
 
 def collate_image_text(batch: list[dict[str, Any]]) -> dict[str, Any]:
     import torch
 
-    return {
+    result = {
         "pixels": torch.stack([sample["pixels"] for sample in batch]),
         "captions": [sample["caption"] for sample in batch],
         "ids": [sample["id"] for sample in batch],
     }
+    if any("group_id" in sample for sample in batch):
+        if not all("group_id" in sample for sample in batch):
+            raise ValueError("Mixed grouped and ungrouped samples in one batch")
+        result["group_ids"] = [sample["group_id"] for sample in batch]
+        result["indices"] = [sample["index"] for sample in batch]
+    return result
+
+
+def validate_caption_groups(records: list[dict[str, Any]], *, split: str) -> list[str]:
+    """Validate the explicit, exact-caption relation before group sampling."""
+    groups: list[str] = []
+    seen_ids: set[str] = set()
+    seen_images: set[Path] = set()
+    for record in records:
+        fields = ("id", "image", "caption", "split", "source", "group_id")
+        if any(not isinstance(record.get(field), str) or not record[field] for field in fields):
+            raise ValueError("Caption-group manifest requires nonempty string fields")
+        normalized = " ".join(record["caption"].split()).casefold()
+        if not normalized or record["group_id"] != normalized:
+            raise ValueError("group_id must equal the normalized complete caption")
+        if record["split"] != split:
+            raise ValueError(f"Caption-group manifest must have split={split!r}")
+        image = Path(record["image"]).resolve()
+        if record["id"] in seen_ids or image in seen_images:
+            raise ValueError("Duplicate sample id or image in caption-group manifest")
+        if not image.is_file():
+            raise FileNotFoundError(image)
+        seen_ids.add(record["id"])
+        seen_images.add(image)
+        groups.append(record["group_id"])
+    return groups

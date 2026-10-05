@@ -1,11 +1,40 @@
-# 最新交接：九组三轮训练与检索完成，adapter + LoRA为当前主候选
+# 最新交接：多正例实验代码完成，adapter + LoRA为当前主候选
 
-更新时间：2026-10-04
+更新时间：2026-10-05
+
+用户已授权新一轮多正例实验代码，已实现可选 caption-group 数据、分组采样与图像轮换、
+均匀多正例 loss 和同组非对角线屏蔽对照，原配置仍默认 rows／single_positive。
+新三组为 adapter+LoRA 的 rotate／multipos／maskpos，seed11、固定1710step，从官方权重开始，
+queue0、无增强，原unique-val保留用于best选择。1710只匹配109,440次样本曝光，不称新池3image epoch。
+新增双向正例集合检索与按caption组均衡指标，旧一对一入口保持默认。
+数据工具 `tools/prepare_skyscript_groups.py` 保持原train/val caption组边界、恢复各组全部可用图片，
+原代表图片保留，缺图默认报错；当前本地没有完整资产，因此尚未实际恢复数据或启动GPU训练。
+`scripts/run_sat_multi_positive.sh` 默认三组训练＋历史A/新B/C/D的24份共同评测＋无权重报告包，
+支持 `--train-only`／`--evaluate-only` 和 latest 恢复。启动、原始CSV路径要求与评测定义见
+[多正例实验说明](SAT_MULTI_POSITIVE_EXPERIMENTS_2026-10-05.md)。
+本轮全量本地测试308项通过，Ruff、Bash语法、CLI帮助和diff检查通过；包括合成数据边界、
+多正例float32/BF16单例等价、采样器精确恢复、三种训练的CPU连续／恢复参数一致及冻结backbone、
+检索正例集合与启动器3训练／24评测／跳过／错误停止／无权重打包。尚无真实数据或GPU效果结论。
 
 用户已选择继续复现adapter+LoRA、adapter-only、head+LoRA。新增seed23/47各三组配置和
-`scripts/run_sat_replications_3epoch.sh`已准备，尚未在服务器启动；默认六组训练后自动评测24份检索并打包。
+`scripts/run_sat_replications_3epoch.sh`已准备，用户报告复现训练仍在进行；默认六组训练后自动评测24份检索并打包。
 Seed11保留作第三个seed，原数据划分、1710step预算和学习率不变，不开展随机head实验。
 启动、恢复与下载方式见[三seed复现计划](SAT_REPLICATION_PLAN_2026-10-04.md)。
+
+用户报告复现训练仍在进行，并提出给adapter+文本LoRA增加queue。已审查现有FIFO并重放采样器：
+queue缺少sample/caption身份与正例屏蔽，跨epoch同样本碰撞真实存在；两侧更新还带来历史向量漂移。
+建议作为独立queue256对照，先补身份屏蔽/恢复和诊断，再在同一三轮协议下检索比较。
+此建议尚未实现或启动，未修改正在运行的训练配置。细节见[queue审查](SAT_QUEUE_REVIEW_2026-10-04.md)。
+
+用户进一步质疑一caption一图和关闭裁剪的多样性代价：确认当前是规范化完全同文分组而非每类别一图，
+但全局固定代表确实舍弃了大量潜在视觉变化。当前规则是单正例loss的受控基线，不是最终最优数据策略。
+组内轮换、多正例/已知正例屏蔽与受控恢复多图已实现为可选协议，尚未进行真实GPU实验；增强仍未恢复。
+具体取舍见[caption与增强审阅](SAT_CAPTION_AND_AUGMENTATION_REVIEW_2026-10-04.md)。
+
+用户优先处理多正例而非queue。研究依据见[多正例首版设计](SAT_MULTI_POSITIVE_DESIGN_2026-10-04.md)：
+保留现有split，恢复训练caption组的额外图像；先组内轮换，再设计真实含多正例的batch和均匀多正例目标。
+固定预算及候选池作为对照，另建group-aware评测，不凭模型相似度自动合并语义类别。
+实施状态以上述2026-10-05说明为准；设计中的真实数据审计、GPU效果及后续充分覆盖预算仍待执行。
 
 已审阅用户上传的`sat_joint_3epoch_reports.tar.gz`：四组均完整训练1710step，
 验证loss持续下降，best均在1710，无跳过更新或日志异常，配置和优化器范围符合设计。

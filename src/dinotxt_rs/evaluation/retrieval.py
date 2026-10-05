@@ -38,9 +38,7 @@ def load_rsicd_records(
         if value["id"] in seen_caption_ids:
             raise ValueError(f"{path}:{line_number}: duplicate caption id {value['id']!r}")
         if value["split"].lower() != expected_split or value["source"] != "RSICD":
-            raise ValueError(
-                f"{path}:{line_number}: expected RSICD split={expected_split!r} only"
-            )
+            raise ValueError(f"{path}:{line_number}: expected RSICD split={expected_split!r} only")
         image_path = Path(value["image"])
         if not image_path.is_file():
             raise FileNotFoundError(f"{path}:{line_number}: image does not exist: {image_path}")
@@ -125,6 +123,59 @@ def _metric_summary(ranks: torch.Tensor) -> dict[str, float]:
     return result
 
 
+def load_caption_group_records(
+    path: Path,
+    *,
+    expected_split: str,
+    expected_source: str = "SkyScript",
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Load unique images and deduplicate texts by an exact normalized caption group.
+
+    Both candidate pools retain first-occurrence manifest order for deterministic
+    ties. One image belongs to one caption group in this protocol. Captions use
+    the first annotated spelling in each group; no semantic groups are inferred.
+    """
+    expected_split = expected_split.lower()
+    if expected_split not in {"train", "val", "test"} or not expected_source.strip():
+        raise ValueError("Caption-group retrieval needs a valid split and nonempty source")
+    required = ("id", "image", "caption", "split", "source", "group_id")
+    records: list[dict[str, str]] = []
+    texts: dict[str, dict[str, str]] = {}
+    seen_ids: set[str] = set()
+    seen_images: set[Path] = set()
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        value = json.loads(line)
+        if not isinstance(value, dict) or any(
+            not isinstance(value.get(field), str) or not value[field].strip() for field in required
+        ):
+            raise ValueError(f"{path}:{line_number}: missing a required caption-group field")
+        if value["split"].lower() != expected_split or value["source"] != expected_source:
+            raise ValueError(
+                f"{path}:{line_number}: expected source={expected_source!r}, "
+                f"split={expected_split!r} only"
+            )
+        normalized_caption = " ".join(value["caption"].split()).casefold()
+        if value["group_id"] != normalized_caption:
+            raise ValueError(f"{path}:{line_number}: group_id must equal normalized caption")
+        if value["id"] in seen_ids:
+            raise ValueError(f"{path}:{line_number}: duplicate sample id {value['id']!r}")
+        image = Path(value["image"])
+        if not image.is_file():
+            raise FileNotFoundError(f"{path}:{line_number}: image does not exist: {image}")
+        if image.resolve() in seen_images:
+            raise ValueError(f"{path}:{line_number}: duplicate image in caption-group manifest")
+        records.append({field: value[field] for field in required})
+        texts.setdefault(
+            value["group_id"],
+            {"group_id": value["group_id"], "caption": value["caption"]},
+        )
+        seen_ids.add(value["id"])
+        seen_images.add(image.resolve())
+    if not records:
+        raise ValueError(f"Caption-group retrieval manifest is empty: {path}")
+    return records, list(texts.values())
+
+
 def _ranks_from_positive_sets(
     query_features: torch.Tensor,
     candidate_features: torch.Tensor,
@@ -159,12 +210,9 @@ def _ranks_from_positive_sets(
             query_scores = scores[local_index]
             positive_scores = query_scores[positive_indices]
             best_positive_score = positive_scores.max()
-            best_positive_index = positive_indices[
-                positive_scores == best_positive_score
-            ].min()
+            best_positive_index = positive_indices[positive_scores == best_positive_score].min()
             preceding_candidates = (query_scores > best_positive_score) | (
-                (query_scores == best_positive_score)
-                & (candidate_indices < best_positive_index)
+                (query_scores == best_positive_score) & (candidate_indices < best_positive_index)
             )
             batch_ranks.append(preceding_candidates.sum() + 1)
         ranks.append(torch.stack(batch_ranks).cpu())
@@ -210,6 +258,91 @@ def retrieval_metrics(
         "mean_recall": (i2t["r1"] + i2t["r5"] + i2t["r10"] + t2i["r1"] + t2i["r5"] + t2i["r10"])
         / 6,
     }
+
+
+def retrieval_metrics_from_positive_sets(
+    image_features: torch.Tensor,
+    text_features: torch.Tensor,
+    image_to_text_positives: list[list[int]],
+    text_to_image_positives: list[list[int]],
+    *,
+    device: torch.device,
+    chunk_size: int = 256,
+    image_group_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Report query hit Recall@K for a reciprocal explicit bipartite relation.
+
+    Recall hits when ANY annotated positive occurs in top K, not the proportion
+    of all positives recovered. Optional image groups give macro-average image
+    hit rates so that groups with many images do not dominate the result.
+    """
+    for label, features in (("image", image_features), ("text", text_features)):
+        if features.ndim != 2 or not len(features) or not torch.isfinite(features).all():
+            raise ValueError(f"Retrieval {label} features must be nonempty finite matrices")
+    if image_features.shape[1] != text_features.shape[1]:
+        raise ValueError("Retrieval feature dimensions must match")
+    relations: list[set[tuple[int, int]]] = []
+    for label, positives, queries, candidates in (
+        ("image", image_to_text_positives, len(image_features), len(text_features)),
+        ("text", text_to_image_positives, len(text_features), len(image_features)),
+    ):
+        if len(positives) != queries:
+            raise ValueError(f"Every {label} query needs a positive candidate set")
+        edges: set[tuple[int, int]] = set()
+        for query_index, indices in enumerate(positives):
+            if not indices:
+                raise ValueError(f"Retrieval {label} query has no positive candidate")
+            if any(type(index) is not int or not 0 <= index < candidates for index in indices):
+                raise ValueError(f"Retrieval {label} positive index is out of bounds")
+            if len(set(indices)) != len(indices):
+                raise ValueError(f"Retrieval {label} positive set contains duplicate indices")
+            edges.update(
+                (query_index, index) if label == "image" else (index, query_index)
+                for index in indices
+            )
+        relations.append(edges)
+    if relations[0] != relations[1]:
+        raise ValueError("Image/text positive relations must be reciprocal")
+    i2t_ranks = _ranks_from_positive_sets(
+        image_features,
+        text_features,
+        image_to_text_positives,
+        chunk_size=chunk_size,
+        device=device,
+    )
+    t2i_ranks = _ranks_from_positive_sets(
+        text_features,
+        image_features,
+        text_to_image_positives,
+        chunk_size=chunk_size,
+        device=device,
+    )
+    i2t, t2i = _metric_summary(i2t_ranks), _metric_summary(t2i_ranks)
+    result = {
+        "image_to_text": i2t,
+        "text_to_image": t2i,
+        "mean_recall": sum(values[key] for values in (i2t, t2i) for key in ("r1", "r5", "r10")) / 6,
+    }
+    if image_group_ids is not None:
+        if len(image_group_ids) != len(image_features) or any(
+            not isinstance(group, str) or not group.strip() for group in image_group_ids
+        ):
+            raise ValueError("Every image needs a nonempty group id for group-balanced metrics")
+        groups: dict[str, list[int]] = defaultdict(list)
+        for index, group in enumerate(image_group_ids):
+            groups[group].append(index)
+        balanced = {
+            f"r{k}": sum(
+                float((i2t_ranks[indices] <= k).float().mean()) for indices in groups.values()
+            )
+            / len(groups)
+            for k in (1, 5, 10)
+        }
+        result["image_to_text_group_balanced"] = balanced
+        result["group_balanced_mean_recall"] = (
+            sum(balanced.values()) + sum(t2i[key] for key in ("r1", "r5", "r10"))
+        ) / 6
+    return result
 
 
 def evaluate_rsicd_retrieval(
@@ -309,6 +442,74 @@ def evaluate_paired_retrieval(
         "positive_definition": "manifest_row_one_to_one",
         "metrics": metrics,
         "counts": {"images": len(records), "captions": len(records), "pairs": len(records)},
+        "encoding": {
+            "image": image_stats,
+            "text": text_stats,
+            "image_logit_scale": image_scale,
+            "text_logit_scale": text_scale,
+            "retrieval_chunk_size": retrieval_chunk_size,
+        },
+        "runtime": evaluation_runtime(evaluation_model.device),
+    }
+
+
+def evaluate_caption_group_retrieval(
+    evaluation_model: EvaluationModel,
+    manifest: Path,
+    *,
+    batch_size: int,
+    num_workers: int,
+    retrieval_chunk_size: int,
+    split: str,
+    source: str = "SkyScript",
+) -> dict[str, Any]:
+    """Evaluate deduplicated caption queries against every held-out group image."""
+    images, captions = load_caption_group_records(
+        manifest, expected_split=split, expected_source=source
+    )
+    image_features, image_scale, image_stats = encode_images(
+        evaluation_model,
+        images,
+        batch_size=batch_size,
+        num_workers=num_workers,
+    )
+    text_features, text_scale, text_stats = encode_texts(
+        evaluation_model,
+        [record["caption"] for record in captions],
+        batch_size=batch_size,
+    )
+    caption_index = {record["group_id"]: index for index, record in enumerate(captions)}
+    image_to_text = [[caption_index[record["group_id"]]] for record in images]
+    text_to_image: list[list[int]] = [[] for _ in captions]
+    for index, (text_index,) in enumerate(image_to_text):
+        text_to_image[text_index].append(index)
+    metrics = retrieval_metrics_from_positive_sets(
+        image_features,
+        text_features,
+        image_to_text,
+        text_to_image,
+        device=evaluation_model.device,
+        chunk_size=retrieval_chunk_size,
+        image_group_ids=[record["group_id"] for record in images],
+    )
+    return {
+        "format_version": 1,
+        "task": "caption_group_image_text_global_retrieval",
+        "tie_policy": RETRIEVAL_TIE_POLICY,
+        "manifest": manifest_metadata(manifest),
+        "model": evaluation_model.metadata,
+        "split": split.lower(),
+        "sources": [source],
+        "positive_definition": "normalized_complete_caption_group",
+        "recall_definition": "fraction_of_queries_with_any_positive_in_top_k",
+        "caption_candidates": "first_manifest_caption_per_group",
+        "metrics": metrics,
+        "counts": {
+            "images": len(images),
+            "captions": len(captions),
+            "groups": len(captions),
+            "positive_pairs": len(images),
+        },
         "encoding": {
             "image": image_stats,
             "text": text_stats,

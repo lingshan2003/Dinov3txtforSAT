@@ -92,3 +92,46 @@ def symmetric_contrastive_loss(
     image_loss = F.cross_entropy(image_logits.float(), targets)
     text_loss = F.cross_entropy(text_logits.float(), targets)
     return LossOutput((image_loss + text_loss) / 2, image_loss, text_loss)
+
+
+def symmetric_group_contrastive_loss(
+    image_features: torch.Tensor,
+    text_features: torch.Tensor,
+    logit_scale: torch.Tensor,
+    group_ids: list[str],
+    *,
+    objective: str = "multi_positive",
+) -> LossOutput:
+    """Uniform positive cross entropy, or a same-caption negative-mask control.
+
+    Every row contains one image and its canonical caption. Repeated captions
+    define off-diagonal positives; no queue or inferred semantic labels are used.
+    """
+    if (
+        image_features.ndim != 2
+        or image_features.shape != text_features.shape
+        or len(group_ids) != len(image_features)
+        or not group_ids
+        or any(not isinstance(group, str) or not group for group in group_ids)
+    ):
+        raise ValueError("Group loss needs paired embeddings and one nonempty group per row")
+    if objective not in {"multi_positive", "mask_same_caption"}:
+        raise ValueError("Unknown group contrastive objective")
+    positives = torch.tensor(
+        [[left == right for right in group_ids] for left in group_ids],
+        dtype=torch.bool, device=image_features.device,
+    )
+    image_logits = (logit_scale * image_features @ text_features.T).float()
+    text_logits = (logit_scale * text_features @ image_features.T).float()
+    if objective == "multi_positive":
+        targets = positives.float() / positives.sum(dim=1, keepdim=True)
+        image_loss = -(targets * F.log_softmax(image_logits, dim=1)).sum(dim=1).mean()
+        text_loss = -(targets.T * F.log_softmax(text_logits, dim=1)).sum(dim=1).mean()
+    else:
+        diagonal = torch.eye(len(group_ids), dtype=torch.bool, device=image_logits.device)
+        image_logits = image_logits.masked_fill(positives & ~diagonal, -torch.inf)
+        text_logits = text_logits.masked_fill(positives.T & ~diagonal, -torch.inf)
+        labels = torch.arange(len(group_ids), device=image_logits.device)
+        image_loss = F.cross_entropy(image_logits, labels)
+        text_loss = F.cross_entropy(text_logits, labels)
+    return LossOutput((image_loss + text_loss) / 2, image_loss, text_loss)
