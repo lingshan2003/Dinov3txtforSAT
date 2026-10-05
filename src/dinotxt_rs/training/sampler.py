@@ -116,6 +116,99 @@ class ResumableBatchSampler(Sampler[list[int]]):
         self.generator.set_state(generator_state)
 
 
+class ResumableCaptionImageBatchSampler(ResumableBatchSampler):
+    """Consume every image once per epoch, with shuffled same-caption chunks.
+
+    Unlike group-balanced rotation, a group contributes *all* its images each
+    epoch. Randomize within each group, cut it into small chunks, randomize the
+    chunks, then batch their flattened indices without dropping the final tail.
+    Chunks may cross a physical batch boundary, and multiple chunks from one
+    group may occur in a batch. This keeps multi-positive signal while sampling
+    groups in proportion to their image count. It does not infer semantic labels.
+    """
+
+    def __init__(
+        self,
+        *,
+        group_ids: list[str],
+        batch_size: int,
+        images_per_group: int = 2,
+        shuffle: bool,
+        seed: int,
+    ) -> None:
+        if not group_ids or any(not isinstance(group, str) or not group for group in group_ids):
+            raise ValueError("group_ids must contain a nonempty string for every dataset row")
+        if type(images_per_group) is not int or not 1 <= images_per_group <= batch_size:
+            raise ValueError("images_per_group must be between 1 and batch_size")
+        group_rows: dict[str, list[int]] = {}
+        for row_index, group in enumerate(group_ids):
+            group_rows.setdefault(group, []).append(row_index)
+        self._caption_groups = list(group_rows)
+        self._group_rows = list(group_rows.values())
+        self.images_per_group = images_per_group
+        super().__init__(
+            dataset_size=len(group_ids), batch_size=batch_size, shuffle=shuffle,
+            seed=seed, drop_last=False,
+        )
+
+    def _current_order(self) -> torch.Tensor:
+        if self._order is None:
+            chunks: list[list[int]] = []
+            for rows in self._group_rows:
+                order = (
+                    [rows[index] for index in torch.randperm(
+                        len(rows), generator=self.generator
+                    ).tolist()]
+                    if self.shuffle else rows
+                )
+                chunks.extend(order[start:start + self.images_per_group]
+                              for start in range(0, len(order), self.images_per_group))
+            chunk_order = (
+                torch.randperm(len(chunks), generator=self.generator).tolist()
+                if self.shuffle else range(len(chunks))
+            )
+            self._order = torch.tensor(
+                [row for index in chunk_order for row in chunks[index]], dtype=torch.int64,
+            )
+        return self._order
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            **super().state_dict(),
+            "sampler_type": "caption_image_epoch_v1",
+            "images_per_group": self.images_per_group,
+            "caption_groups": list(self._caption_groups),
+            "group_rows": [list(rows) for rows in self._group_rows],
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        for name, expected in {
+            "sampler_type": "caption_image_epoch_v1",
+            "images_per_group": self.images_per_group,
+            "caption_groups": self._caption_groups,
+            "group_rows": self._group_rows,
+        }.items():
+            if state.get(name) != expected:
+                raise ValueError(f"Checkpoint image sampler {name} does not match")
+        order = state.get("order")
+        if order is not None and (
+            not isinstance(order, torch.Tensor)
+            or order.ndim != 1 or order.dtype != torch.int64
+            or not torch.equal(order.cpu().sort().values, torch.arange(self.dataset_size))
+        ):
+            raise ValueError("Checkpoint image sampler order must visit every image once")
+        # Validate in a temporary sampler so invalid RNG state cannot partially
+        # mutate the live consumed position.
+        staged = ResumableBatchSampler(
+            dataset_size=self.dataset_size, batch_size=self.batch_size,
+            shuffle=self.shuffle, seed=0, drop_last=False,
+        )
+        staged.load_state_dict(state)
+        self.epoch, self.batch_offset = staged.epoch, staged.batch_offset
+        self._order = None if staged._order is None else staged._order.clone()
+        self.generator.set_state(staged.generator.get_state())
+
+
 class ResumableCaptionGroupBatchSampler(Sampler[list[int]]):
     """Visit caption groups once per epoch and rotate their available images.
 

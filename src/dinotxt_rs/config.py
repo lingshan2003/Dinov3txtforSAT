@@ -65,6 +65,7 @@ class TrainConfig:
     batch_size: int = 16
     gradient_accumulation: int = 1
     max_steps: int = 1000
+    image_epochs: int | None = None
     warmup_steps: int = 100
     learning_rate: float = 5e-5
     weight_decay: float = 0.01
@@ -188,6 +189,9 @@ def load_config(path: str | Path) -> Config:
             batch_size=int(train.get("batch_size", 16)),
             gradient_accumulation=int(train.get("gradient_accumulation", 1)),
             max_steps=int(train.get("max_steps", 1000)),
+            image_epochs=(
+                None if train.get("image_epochs") is None else int(train["image_epochs"])
+            ),
             warmup_steps=int(train.get("warmup_steps", 100)),
             learning_rate=float(train.get("learning_rate", 5e-5)),
             weight_decay=float(train.get("weight_decay", 0.01)),
@@ -266,8 +270,8 @@ def load_config(path: str | Path) -> Config:
 
 
 def validate_config(config: Config) -> None:
-    if config.data.caption_sampling not in {"rows", "caption_group"}:
-        raise ValueError("data.caption_sampling must be rows or caption_group")
+    if config.data.caption_sampling not in {"rows", "caption_group", "image_epoch"}:
+        raise ValueError("data.caption_sampling must be rows, caption_group or image_epoch")
     if not 1 <= config.data.images_per_caption <= config.train.batch_size:
         raise ValueError("data.images_per_caption must be in [1, train.batch_size]")
     if config.train.contrastive_objective not in {
@@ -277,10 +281,11 @@ def validate_config(config: Config) -> None:
     if config.data.caption_sampling == "rows" and config.data.images_per_caption != 1:
         raise ValueError("images_per_caption requires caption_group sampling")
     if config.train.contrastive_objective != "single_positive" and (
-        config.data.caption_sampling != "caption_group" or config.data.images_per_caption < 2
+        config.data.caption_sampling not in {"caption_group", "image_epoch"}
+        or config.data.images_per_caption < 2
     ):
-        raise ValueError("Group objectives require caption_group sampling with >=2 images")
-    if config.data.caption_sampling == "caption_group":
+        raise ValueError("Group objectives require group-aware sampling with >=2 images")
+    if config.data.caption_sampling in {"caption_group", "image_epoch"}:
         if config.train.queue_size != 0:
             raise ValueError("Caption-group training currently requires queue_size=0")
         if config.data.images_per_caption > 1 and (
@@ -291,6 +296,11 @@ def validate_config(config: Config) -> None:
             raise ValueError(
                 "First caption-group protocol requires num_workers=0 and no augmentation"
             )
+    if config.data.caption_sampling == "image_epoch":
+        if type(config.train.image_epochs) is not int or config.train.image_epochs <= 0:
+            raise ValueError("image_epoch sampling requires positive train.image_epochs")
+    elif config.train.image_epochs is not None:
+        raise ValueError("train.image_epochs requires image_epoch sampling")
     if config.model.backbone_domain not in {"web", "sat"}:
         raise ValueError("model.backbone_domain must be 'web' or 'sat'")
     if config.model.image_size <= 0 or config.model.image_size % 16:

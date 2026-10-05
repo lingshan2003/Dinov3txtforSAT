@@ -38,6 +38,7 @@ from dinotxt_rs.training.provenance import (
 from dinotxt_rs.training.sampler import (
     ResumableBatchSampler,
     ResumableCaptionGroupBatchSampler,
+    ResumableCaptionImageBatchSampler,
 )
 
 
@@ -409,7 +410,7 @@ def train(
     fixed_monitor_batch = _load_fixed_monitor_batch(config)
     validation = _load_validation_loader(config, device)
     group_ids: list[str] | None = None
-    if config.data.caption_sampling == "caption_group":
+    if config.data.caption_sampling in {"caption_group", "image_epoch"}:
         group_ids = validate_caption_groups(dataset.records, split="train")
         if validation is not None:
             validation_records = validation[0].records
@@ -434,6 +435,12 @@ def train(
             dataset_size=len(dataset), batch_size=config.train.batch_size,
             shuffle=config.data.shuffle_train, seed=config.experiment.seed,
         )
+    elif config.data.caption_sampling == "image_epoch":
+        sampler = ResumableCaptionImageBatchSampler(
+            group_ids=group_ids, batch_size=config.train.batch_size,
+            images_per_group=config.data.images_per_caption,
+            shuffle=config.data.shuffle_train, seed=config.experiment.seed,
+        )
     else:
         sampler = ResumableCaptionGroupBatchSampler(
             group_ids=group_ids, batch_size=config.train.batch_size,
@@ -442,6 +449,19 @@ def train(
         )
     if not sampler.batches_per_epoch:
         raise ValueError("Sampler cannot produce a full physical batch")
+    full_image_micro_steps: int | None = None
+    if config.data.caption_sampling == "image_epoch":
+        if config.train.image_epochs is None or config.train.image_epochs <= 0:
+            raise ValueError("image_epoch sampling requires positive train.image_epochs")
+        full_image_micro_steps = sampler.batches_per_epoch * config.train.image_epochs
+        expected_steps = math.ceil(full_image_micro_steps / config.train.gradient_accumulation)
+        if config.train.max_steps != expected_steps:
+            raise ValueError(
+                "Full image epoch max_steps must equal "
+                f"{expected_steps} for {len(dataset)} images, "
+                f"{config.train.image_epochs} epochs, batch{config.train.batch_size} "
+                f"and accumulation{config.train.gradient_accumulation}"
+            )
     loader_generator = torch.Generator()
     loader_generator.manual_seed(config.experiment.seed)
     loader = DataLoader(
@@ -531,6 +551,7 @@ def train(
     optimizer.zero_grad(set_to_none=True)
     global_step = 0
     micro_step = 0
+    sample_exposures = 0
     running_loss = 0.0
     running_in_batch_loss = 0.0
     running_log_steps = 0
@@ -583,6 +604,15 @@ def train(
         )
         if micro_step % config.train.gradient_accumulation:
             raise ValueError("Resume checkpoint was taken during gradient accumulation")
+        sample_exposures = int(
+            run_state.get("sample_exposures", micro_step * config.train.batch_size)
+        )
+        if full_image_micro_steps is not None:
+            expected_micro_step = sampler.epoch * sampler.batches_per_epoch + sampler.batch_offset
+            expected_exposures = (sampler.epoch * len(dataset)
+                                  + sampler.batch_offset * config.train.batch_size)
+            if micro_step != expected_micro_step or sample_exposures != expected_exposures:
+                raise ValueError("Checkpoint image epoch position and sample exposures disagree")
         running_loss = float(run_state.get("running_loss", 0.0))
         running_in_batch_loss = float(run_state.get("running_in_batch_loss", 0.0))
         running_log_steps = int(
@@ -680,6 +710,7 @@ def train(
     def checkpoint_run_state() -> dict[str, Any]:
         return {
             "micro_step": micro_step,
+            "sample_exposures": sample_exposures,
             "running_loss": running_loss,
             "running_in_batch_loss": running_in_batch_loss,
             "running_log_steps": running_log_steps,
@@ -742,6 +773,11 @@ def train(
 
     start = time.monotonic()
     while global_step < target_steps:
+        if full_image_micro_steps is not None and micro_step >= full_image_micro_steps:
+            raise RuntimeError(
+                "Image epoch budget exhausted before target optimizer steps; "
+                "check skipped optimizer updates"
+            )
         for batch in loader:
             if not batch["ids"]:
                 raise RuntimeError("DataLoader produced an empty batch")
@@ -752,6 +788,10 @@ def train(
                     "Tokenizer batch size does not match image batch size for samples: "
                     + ", ".join(batch["ids"][:5])
                 )
+            accumulation_width = config.train.gradient_accumulation
+            if full_image_micro_steps is not None:
+                window_start = micro_step - micro_step % config.train.gradient_accumulation
+                accumulation_width = min(accumulation_width, full_image_micro_steps - window_start)
             with _autocast(device, config.train.precision):
                 image_features, text_features, logit_scale, _, _ = model(pixels, tokens)
                 if config.train.contrastive_objective == "single_positive":
@@ -764,7 +804,7 @@ def train(
                         objective=config.train.contrastive_objective,
                     )
                 _assert_finite_loss(loss_output.loss, batch["ids"])
-                loss = loss_output.loss / config.train.gradient_accumulation
+                loss = loss_output.loss / accumulation_width
             with torch.no_grad():
                 if config.train.contrastive_objective == "single_positive":
                     in_batch_loss = symmetric_contrastive_loss(
@@ -785,7 +825,10 @@ def train(
             optimizer_step_loss += float(loss_output.loss.detach())
             optimizer_step_in_batch_loss += float(in_batch_loss)
             micro_step += 1
-            if micro_step % config.train.gradient_accumulation:
+            sample_exposures += len(batch["ids"])
+            if micro_step % config.train.gradient_accumulation and (
+                full_image_micro_steps is None or micro_step < full_image_micro_steps
+            ):
                 continue
 
             scaler.unscale_(optimizer)
@@ -835,8 +878,8 @@ def train(
                 if model.logit_scale.requires_grad:
                     model.logit_scale.clamp_(0.0, math.log(100.0))
             global_step += 1
-            step_loss = optimizer_step_loss / config.train.gradient_accumulation
-            step_in_batch_loss = optimizer_step_in_batch_loss / config.train.gradient_accumulation
+            step_loss = optimizer_step_loss / accumulation_width
+            step_in_batch_loss = optimizer_step_in_batch_loss / accumulation_width
             optimizer_step_loss = 0.0
             optimizer_step_in_batch_loss = 0.0
             if initial_loss is None:
@@ -922,6 +965,10 @@ def train(
                     record["training_image_pool_coverage"] = (
                         len(seen_training_indices) / len(dataset)
                     )
+                    record["sample_exposures"] = sample_exposures
+                    if full_image_micro_steps is not None:
+                        record["completed_image_epochs"] = sampler.epoch
+                        record["image_epoch_batch_offset"] = sampler.batch_offset
                 _append_jsonl(metrics_path, record)
                 print(json.dumps(record, ensure_ascii=False), flush=True)
                 running_loss = 0.0
@@ -969,6 +1016,7 @@ def train(
         "batch_size": config.train.batch_size,
         "gradient_accumulation": config.train.gradient_accumulation,
         "micro_steps": micro_step,
+        "sample_exposures": sample_exposures,
         "skipped_optimizer_steps": skipped_optimizer_steps,
         "checkpoint_policy": config.train.checkpoint_policy,
         "log_at_end": True,
@@ -1008,14 +1056,30 @@ def train(
             "count": len(group_counts),
             "singleton_groups": sum(count == 1 for count in group_counts.values()),
             "max_images_per_group": max(group_counts.values()),
-            "epoch_definition": "one_visit_per_caption_group_not_all_images",
-            "completed_group_epochs": sampler.epoch,
+            "epoch_definition": (
+                "one_pass_over_every_training_image" if full_image_micro_steps is not None
+                else "one_visit_per_caption_group_not_all_images"
+            ),
             "current_epoch_batch_offset": sampler.batch_offset,
-            "sample_exposures": micro_step * config.train.batch_size,
+            "sample_exposures": sample_exposures,
             "unique_images_seen": len(seen_training_indices),
             "image_pool_coverage": len(seen_training_indices) / len(dataset),
             "unique_caption_groups_seen": len({group_ids[index]
                                               for index in seen_training_indices}),
+        }
+        if full_image_micro_steps is None:
+            summary["caption_groups"]["completed_group_epochs"] = sampler.epoch
+    if full_image_micro_steps is not None:
+        summary["image_epochs"] = {
+            "target_epochs": config.train.image_epochs,
+            "completed_epochs": sampler.epoch,
+            "current_epoch_batch_offset": sampler.batch_offset,
+            "epoch_definition": "one_pass_over_every_training_image",
+            "sample_exposures": sample_exposures,
+            "unique_images_seen": len(seen_training_indices),
+            "image_pool_coverage": len(seen_training_indices) / len(dataset),
+            "micro_batches_per_epoch": sampler.batches_per_epoch,
+            "target_micro_batches": full_image_micro_steps,
         }
     if fixed_monitor_batch is not None:
         if initial_fixed_monitor_loss is None or final_fixed_monitor_loss is None:

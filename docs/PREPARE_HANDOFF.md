@@ -1,13 +1,36 @@
-# 最新交接：多正例实验代码完成，adapter + LoRA为当前主候选
+# 最新交接：保留 rotate 对照，新增全图片池一轮微调系列
 
 更新时间：2026-10-05
+
+用户明确将研究拆为两条：rotate继续与原unique-caption作1710step对照；multipos/maskpos另建全图片规模探索，不再要求旧预算匹配。
+用户选择首轮完整训练1个图片epoch，保留现有train/val边界：训练337,199图、验证33,118图，总池370,317图。
+新增image_epoch采样：每组全部图片形成两图小块、全池shuffle再展平batch；每张训练图恰好一次、保留尾批和最后不足累计的窗口。
+新的两份fullimage1epoch_seed11配置各5269step、warmup527，从共同官方初始化训练adapter+完整文本LoRA，queue0无增强。
+总曝光精确337,199，不是5269×64；不同caption仍36,495，研究增加的视觉实例/覆盖而非文本种类。
+新增`scripts/run_sat_full_image_epoch.sh`，独立预检、两组顺序训练、step0/best/latest各三池共18评测、无权重报告打包。
+保留每200step验证和0/终点强制验证、三个固定checkpoint；末尾累计窗口3个microbatch按实际数量缩放。
+启动器支持preflight-only/train-only/evaluate-only、已完成跳过和latest恢复。服务器尚未执行这组新实验。
+协议、tmux启动和下载说明见[全图片池一轮实验](SAT_FULL_IMAGE_EPOCH_PLAN_2026-10-05.md)。
+本地全量359项测试通过；另用真实组大小直方图构造337,199行映射，验证完整一轮无丢图/重复、尾批15张。
+
+用户已上传 `sat_multi_positive_seed11_reports.tar.gz`，确认候选包安装、恢复数据、三组训练及共同检索已执行。
+报告中的实际池为 train337,199图/36,495组、val33,118图/4,055组；原代表图全部保留，缺图和组/路径/ID交叉为0。
+这是报告元数据确认，不代表已直接登录服务器或新增图片的像素/地理独立性核验。
+rotate／multipos／maskpos均完整1710step、109,440次曝光，无非有限值或跳过更新，best都在终点。
+历史adapter+LoRA、rotate、multipos、maskpos的原SkyScript MR依次为10.8837/11.0974/10.3124/10.6658%，
+多图按图MR为8.4961/8.9324/8.1190/8.8512%，按组均衡MR为9.0543/9.3260/8.6210/8.8518%，
+RSICD MR为7.0445/7.1877/6.7093/7.0262%。rotate在三池MR上小幅提高，但原SkyScript双向R@1下降，尚无多seed显著结论。
+多正例两组每batch平均11.327不同caption，而rotate为16；同图片曝光预算下组访问少29.20%。
+新池实际不同图覆盖18.82%/21.50%/21.50%，不能称全部图片训练三遍。
+未发现配方执行错误；下一步建议复现rotate，并考虑唯一文本候选的矩形多正例方案，先拆开负例多样性与目标权重。
+本次仅审阅报告，没有修改配方或启动新训练。详情见[多正例结果审阅](SAT_MULTI_POSITIVE_ANALYSIS_2026-10-05.md)。
 
 本地根目录现已找到原始两份top30 CSV、images2.zip和images3.zip，用户希望在本地筛选打包以节省服务器空间。
 已从polished版流式生成 `outputs/skyscript_polished_top30_images23_candidates_v1.zip`，
 370,317张图、40,550caption组，约5.94GB；两个原ZIP共约19.43GB。图片字节保持不变，读取使用ZIP自带CRC，未新增SHA验证。
 本地缺少服务器固定train/val清单，包内保留候选池，不重建split。新增安装器从服务器原清单推断图片root，
 复用已有代表图，只恢复已知组图片并生成分组manifest。两个CSV差异、实际包路径及安装命令见
-[本地候选上传包](SKYSCRIPT_LOCAL_BUNDLE_2026-10-05.md)。尚未上传或在服务器安装／启动新训练。
+[本地候选上传包](SKYSCRIPT_LOCAL_BUNDLE_2026-10-05.md)。服务器执行情况现由上述用户报告确认。
 补充上传包／安装器后全量341项测试通过，Ruff与diff检查通过。实际本地包的ZIP目录计数、字节数及压缩方式与审计匹配。
 
 用户已授权新一轮多正例实验代码，已实现可选 caption-group 数据、分组采样与图像轮换、
@@ -16,13 +39,13 @@
 queue0、无增强，原unique-val保留用于best选择。1710只匹配109,440次样本曝光，不称新池3image epoch。
 新增双向正例集合检索与按caption组均衡指标，旧一对一入口保持默认。
 数据工具 `tools/prepare_skyscript_groups.py` 保持原train/val caption组边界、恢复各组全部可用图片，
-原代表图片保留，缺图默认报错；当前本地没有完整资产，因此尚未实际恢复数据或启动GPU训练。
+原代表图片保留，缺图默认报错；服务器恢复与GPU训练结果现已完成并审阅，本地未直接执行GPU训练。
 `scripts/run_sat_multi_positive.sh` 默认三组训练＋历史A/新B/C/D的24份共同评测＋无权重报告包，
 支持 `--train-only`／`--evaluate-only` 和 latest 恢复。启动、原始CSV路径要求与评测定义见
 [多正例实验说明](SAT_MULTI_POSITIVE_EXPERIMENTS_2026-10-05.md)。
 本轮全量本地测试308项通过，Ruff、Bash语法、CLI帮助和diff检查通过；包括合成数据边界、
 多正例float32/BF16单例等价、采样器精确恢复、三种训练的CPU连续／恢复参数一致及冻结backbone、
-检索正例集合与启动器3训练／24评测／跳过／错误停止／无权重打包。尚无真实数据或GPU效果结论。
+检索正例集合与启动器3训练／24评测／跳过／错误停止／无权重打包。真实GPU结果以上述新审阅为准。
 
 用户已选择继续复现adapter+LoRA、adapter-only、head+LoRA。新增seed23/47各三组配置和
 `scripts/run_sat_replications_3epoch.sh`已准备，用户报告复现训练仍在进行；默认六组训练后自动评测24份检索并打包。
@@ -36,13 +59,13 @@ queue缺少sample/caption身份与正例屏蔽，跨epoch同样本碰撞真实�
 
 用户进一步质疑一caption一图和关闭裁剪的多样性代价：确认当前是规范化完全同文分组而非每类别一图，
 但全局固定代表确实舍弃了大量潜在视觉变化。当前规则是单正例loss的受控基线，不是最终最优数据策略。
-组内轮换、多正例/已知正例屏蔽与受控恢复多图已实现为可选协议，尚未进行真实GPU实验；增强仍未恢复。
+组内轮换、多正例/已知正例屏蔽与受控恢复多图已实现并完成首轮seed11 GPU比较；增强仍未恢复。
 具体取舍见[caption与增强审阅](SAT_CAPTION_AND_AUGMENTATION_REVIEW_2026-10-04.md)。
 
 用户优先处理多正例而非queue。研究依据见[多正例首版设计](SAT_MULTI_POSITIVE_DESIGN_2026-10-04.md)：
 保留现有split，恢复训练caption组的额外图像；先组内轮换，再设计真实含多正例的batch和均匀多正例目标。
 固定预算及候选池作为对照，另建group-aware评测，不凭模型相似度自动合并语义类别。
-实施状态以上述2026-10-05说明为准；设计中的真实数据审计、GPU效果及后续充分覆盖预算仍待执行。
+实施状态以上述2026-10-05结果为准；元数据审计与首轮GPU效果已完成，后续充分覆盖预算尚未执行。
 
 已审阅用户上传的`sat_joint_3epoch_reports.tar.gz`：四组均完整训练1710step，
 验证loss持续下降，best均在1710，无跳过更新或日志异常，配置和优化器范围符合设计。
@@ -55,14 +78,15 @@ Adapter+LoRA的SkyScript/RSICD mean Recall为10.884%/7.044%，相对adapter-only
 当前九组中两项mean Recall最高；RSICD图→文R@1却从2.102%降到1.737%，不能声称全面领先。
 Head+LoRA为无adapter配置中mean Recall最高（6.663%/5.098%），adapter+projection整体近乎持平。
 报告完整、step0与旧五组指标一致，全部联合身份检查match；没有实际权重或逐查询rank，仍是单seed开发验证。
-当前主候选为adapter+LoRA，保留adapter-only和head+LoRA作重要参照；已准备上述多seed复现，后续检查方向指标和检索定性诊断，尚未启动新训练或最终test。
+当前主架构为adapter+LoRA，新增rotate为数据采样候选，保留adapter-only和head+LoRA作重要参照；上述多seed复现用户此前报告仍在进行，尚未收到其完整结果或执行最终test。
 最新详细结论见[联合完整检索审阅](SAT_JOINT_3EPOCH_RETRIEVAL_ANALYSIS_2026-10-04.md)，
 训练过程及历史评测命令见[联合三轮训练审阅](SAT_JOINT_3EPOCH_ANALYSIS_2026-10-04.md)。
 完整15种可用组合、adapter机制假设与首批启动方式见[联合实验计划](SAT_JOINT_EXPERIMENT_PLAN_2026-10-04.md)。
 
 ## 1. 一页结论
 
-当前进度：九组seed11、1710step（3 epoch）训练和step0/best的SkyScript-val、RSICD-val完整检索均已完成，共36份检索JSON。
+当前进度：原九组seed11、1710step（原代表图3 epoch）训练和step0/best的SkyScript-val、RSICD-val完整检索均已完成，共36份历史检索JSON。
+新增恢复多图的三组seed11各1710step及A/B/C/D共同三池检索也已完成，共24份新报告；新池覆盖量不能沿用3image epoch的描述。
 历史五组单侧比较中，Adapter在两项数据的六个Recall子指标均领先，mean Recall分别为9.684%/6.679%；当时无adapter路线中，
 全层文本LoRA的mean Recall为4.624%/3.876%，视觉head为3.042%/3.659%。
 共同step0分别仅0.115%/0.469%，因此适配明显改善检索。最新adapter+LoRA的SkyScript R@1仍仅2.76%/3.50%，绝对对齐能力仍弱。

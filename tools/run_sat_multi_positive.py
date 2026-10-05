@@ -52,7 +52,7 @@ def _read(path: Path) -> dict[str, Any]:
     return value
 
 
-def training_state(trial: Trial) -> str:
+def training_state(trial: Trial, *, target_steps: int = TARGET_STEPS) -> str:
     """Determine safe continuation without inspecting or hashing checkpoint payloads."""
     output = trial.output
     if output.exists() and not output.is_dir():
@@ -64,13 +64,13 @@ def training_state(trial: Trial) -> str:
     summary = _read(summary_path) if summary_path.exists() else {}
     complete = summary.get("completed") is True
     if complete:
-        if summary.get("steps") != TARGET_STEPS or summary.get("target_steps") != TARGET_STEPS:
+        if summary.get("steps") != target_steps or summary.get("target_steps") != target_steps:
             raise ValueError(f"Unexpected completed training budget: {output}")
         validation = summary.get("validation", {})
-        if validation.get("last_step") != TARGET_STEPS:
+        if validation.get("last_step") != target_steps:
             raise ValueError(f"Missing terminal validation: {output}")
         best_step = validation.get("best_step")
-        if type(best_step) is not int or not 0 <= best_step <= TARGET_STEPS:
+        if type(best_step) is not int or not 0 <= best_step <= target_steps:
             raise ValueError(f"Invalid best checkpoint step: {output}")
         for name in ("step_0000000.pt", "best.pt", "latest.pt"):
             if not (output / name).is_file():
@@ -100,7 +100,10 @@ def validate_report(
 ) -> None:
     value = _read(report)
     summary = _read(trial.output / "training_summary.json")
-    expected_step = 0 if tag == "step_0000000" else summary["validation"]["best_step"]
+    expected_step = (
+        0 if tag == "step_0000000" else summary["steps"] if tag == "latest"
+        else summary["validation"]["best_step"]
+    )
     task = {
         "skyscript_unique": "paired_image_text_global_retrieval",
         "skyscript_group": "caption_group_image_text_global_retrieval",
@@ -158,7 +161,8 @@ def validate_report(
 
 
 def _pool_counts(
-    root: Path, *, training_images: set[Path] | None = None, training_ids: set[str] | None = None
+    root: Path, *, training_images: set[Path] | None = None, training_ids: set[str] | None = None,
+    include_rsicd: bool = True,
 ) -> dict[str, dict[str, int]]:
     unique = load_paired_records(
         root / MANIFESTS["skyscript_unique"], expected_split="val", expected_source="SkyScript"
@@ -166,7 +170,6 @@ def _pool_counts(
     images, texts = load_caption_group_records(
         root / MANIFESTS["skyscript_group"], expected_split="val"
     )
-    rs_images, rs_texts = load_rsicd_records(root / MANIFESTS["rsicd"], expected_split="val")
     # Expanded validation must preserve the original held-out caption groups.
     unique_groups = {" ".join(record["caption"].split()).casefold() for record in unique}
     if {record["group_id"] for record in texts} != unique_groups:
@@ -186,7 +189,7 @@ def _pool_counts(
         raise ValueError("Grouped training and expanded validation image paths overlap")
     if training_ids and training_ids & {record["id"] for record in images}:
         raise ValueError("Grouped training and expanded validation sample ids overlap")
-    return {
+    counts = {
         "skyscript_unique": {"images": len(unique), "captions": len(unique), "pairs": len(unique)},
         "skyscript_group": {
             "images": len(images),
@@ -194,8 +197,11 @@ def _pool_counts(
             "groups": len(texts),
             "positive_pairs": len(images),
         },
-        "rsicd": {"images": len(rs_images), "captions": len(rs_texts)},
     }
+    if include_rsicd:
+        rs_images, rs_texts = load_rsicd_records(root / MANIFESTS["rsicd"], expected_split="val")
+        counts["rsicd"] = {"images": len(rs_images), "captions": len(rs_texts)}
+    return counts
 
 
 def _execute(command: list[str], log: Path, *, root: Path) -> None:
