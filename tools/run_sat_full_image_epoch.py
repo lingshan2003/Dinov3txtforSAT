@@ -82,15 +82,18 @@ def _training_pool(root: Path, manifest: Path) -> tuple[list[dict[str, Any]], se
     )
 
 
-def _package(root: Path, trials: list[Trial]) -> Path:
-    archive = root / "outputs/sat_full_image_epoch_seed11_reports.tar.gz"
+def _package(
+    root: Path, trials: list[Trial], *, report_dir: Path = REPORT_DIR,
+    series: str = "sat_full_image_epoch_seed11",
+) -> Path:
+    archive = root / "outputs" / f"{series}_reports.tar.gz"
     temporary = archive.with_name(archive.name + ".part")
     paths: set[Path] = {root / GROUP_DIR / "audit.json"}
     for trial in trials:
         if trial.output.exists():
             paths.update(path for path in trial.output.iterdir()
                          if path.is_file() and path.suffix in {".json", ".jsonl", ".toml", ".log"})
-    comparison = root / REPORT_DIR
+    comparison = root / report_dir
     if comparison.exists():
         paths.update(path for path in comparison.rglob("*")
                      if path.is_file() and path.suffix in {".json", ".log"})
@@ -108,11 +111,15 @@ def _package(root: Path, trials: list[Trial]) -> Path:
     return archive
 
 
-def run_pipeline(root: Path, python: str, *, mode: str = "all") -> Path | None:
+def run_pipeline(
+    root: Path, python: str, *, mode: str = "all", trials: list[Trial] | None = None,
+    report_dir: Path = REPORT_DIR, series: str = "sat_full_image_epoch_seed11",
+    require_matching_recipes: bool = True,
+) -> Path | None:
     if mode not in {"all", "train-only", "evaluate-only", "preflight-only"}:
         raise ValueError(f"Unknown pipeline mode: {mode}")
     root = root.resolve()
-    trials = [Trial(
+    trials = trials if trials is not None else [Trial(
         method,
         root / f"configs/skyscript_sat_adapter_textlora_{method}_fullimage1epoch_seed11.toml",
         root / f"outputs/skyscript_sat_adapter_textlora_{method}_fullimage1epoch_seed11",
@@ -128,11 +135,11 @@ def run_pipeline(root: Path, python: str, *, mode: str = "all") -> Path | None:
             config.experiment.seed != 11
             or (root / config.experiment.output_dir).resolve() != trial.output
             or config.data.caption_sampling != "image_epoch"
-            or config.train.image_epochs != 1
+            or (require_matching_recipes and config.train.image_epochs != 1)
             or config.data.images_per_caption != 2
-            or config.train.contrastive_objective != {
+            or config.train.contrastive_objective != ({
                 "multipos": "multi_positive", "maskpos": "mask_same_caption"
-            }[trial.method]
+            }[trial.method] if require_matching_recipes else "mask_same_caption")
         ):
             raise ValueError(f"Unexpected full-image protocol: {trial.config}")
         missing = [path for path in required_paths(config)
@@ -146,8 +153,10 @@ def run_pipeline(root: Path, python: str, *, mode: str = "all") -> Path | None:
         signature = (config.model, config.data, config.experiment.seed,
                      {key: value for key, value in vars(config.train).items()
                       if key != "contrastive_objective"})
-        if shared is not None and signature != shared:
+        if shared is not None and require_matching_recipes and signature != shared:
             raise ValueError("multipos and maskpos must share model, sampling and training budget")
+        if shared is not None and not require_matching_recipes and config.data != shared[1]:
+            raise ValueError("Full-image follow-ups must share the same data protocol")
         shared = signature
         if pool is None:
             pool = _training_pool(root, (root / config.data.train_manifest).resolve())
@@ -184,7 +193,7 @@ def run_pipeline(root: Path, python: str, *, mode: str = "all") -> Path | None:
     for trial in trials:
         for dataset, relative_manifest in MANIFESTS.items():
             for tag in TAGS:
-                report = root / REPORT_DIR / trial.method / f"{dataset}_{tag}.json"
+                report = root / report_dir / trial.method / f"{dataset}_{tag}.json"
                 if report.exists():
                     if states[trial.method] != "complete":
                         raise RuntimeError(f"Existing evaluation for incomplete training: {report}")
@@ -212,7 +221,7 @@ def run_pipeline(root: Path, python: str, *, mode: str = "all") -> Path | None:
         for trial in trials:
             for dataset, relative_manifest in MANIFESTS.items():
                 for tag in TAGS:
-                    report = root / REPORT_DIR / trial.method / f"{dataset}_{tag}.json"
+                    report = root / report_dir / trial.method / f"{dataset}_{tag}.json"
                     if not report.exists():
                         cli = "rsicd" if dataset == "rsicd" else "skyscript"
                         command = [
@@ -229,24 +238,28 @@ def run_pipeline(root: Path, python: str, *, mode: str = "all") -> Path | None:
                     validate_report(report, trial, dataset, tag, root / relative_manifest,
                                     counts[dataset])
     summary = {
-        "series": "sat_full_image_epoch_seed11", "mode": mode,
+        "series": series, "mode": mode,
         "comparison_scope": "full_image_coverage_exploration_not_matched_to_1710_step_series",
-        "training_images": len(records), "image_epochs": 1,
+        "training_images": len(records),
+        "image_epochs": (
+            configs[trials[0].method].train.image_epochs if require_matching_recipes
+            else {trial.method: configs[trial.method].train.image_epochs for trial in trials}
+        ),
         "trials": {trial.method: _read(trial.output / "training_summary.json") for trial in trials},
         "retrieval": {
             trial.method: {
                 f"{dataset}_{tag}": _read(
-                    root / REPORT_DIR / trial.method / f"{dataset}_{tag}.json"
+                    root / report_dir / trial.method / f"{dataset}_{tag}.json"
                 )["metrics"] for dataset in MANIFESTS for tag in TAGS
             } for trial in trials
         } if mode != "train-only" else {},
     }
-    report_dir = root / REPORT_DIR
-    report_dir.mkdir(parents=True, exist_ok=True)
-    temporary = report_dir / "summary.json.part"
+    output_reports = root / report_dir
+    output_reports.mkdir(parents=True, exist_ok=True)
+    temporary = output_reports / "summary.json.part"
     temporary.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(report_dir / "summary.json")
-    return _package(root, trials)
+    temporary.replace(output_reports / "summary.json")
+    return _package(root, trials, report_dir=report_dir, series=series)
 
 
 def main() -> None:

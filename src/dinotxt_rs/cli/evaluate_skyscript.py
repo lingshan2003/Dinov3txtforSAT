@@ -4,7 +4,11 @@ import argparse
 from pathlib import Path
 
 from dinotxt_rs.config import load_config
-from dinotxt_rs.evaluation.common import load_evaluation_model, write_json_atomic
+from dinotxt_rs.evaluation.common import (
+    load_evaluation_model,
+    load_official_reference_model,
+    write_json_atomic,
+)
 from dinotxt_rs.evaluation.retrieval import (
     evaluate_caption_group_retrieval,
     evaluate_paired_retrieval,
@@ -20,6 +24,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--training-output", type=Path)
+    parser.add_argument(
+        "--official", action="store_true",
+        help="Evaluate unmodified official weights without project adapters or LoRA.",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--retrieval-chunk-size", type=int, default=256)
@@ -30,17 +38,22 @@ def parse_args() -> argparse.Namespace:
         default="one-to-one",
         help="caption-group requires group_id and deduplicates caption candidates by group",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.official and (args.checkpoint is not None or args.training_output is not None):
+        parser.error("--official cannot be combined with --checkpoint or --training-output")
+    return args
 
 
 def main() -> None:
     args = parse_args()
     if args.output.exists():
         raise FileExistsError(f"Refusing to overwrite evaluation output: {args.output}")
-    model = load_evaluation_model(
-        load_config(args.config),
-        checkpoint=args.checkpoint,
-        training_output=args.training_output,
+    config = load_config(args.config)
+    model = (
+        load_official_reference_model(config) if args.official
+        else load_evaluation_model(
+            config, checkpoint=args.checkpoint, training_output=args.training_output,
+        )
     )
     evaluate = (
         evaluate_caption_group_retrieval

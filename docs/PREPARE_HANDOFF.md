@@ -1,6 +1,57 @@
-# 最新交接：保留 rotate 对照，新增全图片池一轮微调系列
+# 最新交接：优先原生 DINOv3.txt 遥感领域适配，默认仅一组完整图片 epoch
 
-更新时间：2026-10-05
+更新时间：2026-10-06
+
+用户认为SAT与通用head/text错配修复的投入产出偏低，提出将现有方法迁移到原生DINOv3.txt作为更直接的领域后训练方向。
+按此新方向优先准备Web原生组合；旧“SAT唯一主角、Web统一后置”安排不再限制本轮工作，历史SAT配置与报告完整保留。
+新增`tools/run_web_native.py`、`scripts/run_web_native.sh`和三份Web full-maskpos一图片epoch配置。
+默认先评官方原生Web三池基线，再只训练adapter256+全24层文本及projection LoRA一组，完整5269step/337199图曝光。
+`--include-controls`可选adapter-only和无adapter的head全量+文本LoRA两个同预算对照；不默认重跑3epoch/更大batch/强文本全量矩阵。
+支持`--baseline-only`先评起点不训练；两个全局检索CLI新增`--official`，调用已有纯官方reference loader，
+不加项目adapter/LoRA，报告checkpoint=null/trainable=0；禁止与checkpoint/training-output混用。
+保持batch16/accum4、maskpos、queue0、noaug、原split、200step及step0/终点验证、三固定权重；新权重初始化不复用SAT微调参数。
+主组相对已完成SAT full-maskpos一轮只变name/output/domain/backbone_weights，Web domain使用原生预处理。
+默认包含3份官方和9份step0/best/latest检索，含controls为3+27份：`outputs/web_native_seed11_reports.tar.gz`。
+本地未启动服务器GPU。旧Web500step adapter-only已有三seedSkyScript MR14.0006%±0.3438pp，
+RSICD15.5485%±0.3989pp；前者平均增益5.3706pp，后者平均−0.3087pp，不能宣称已经跨数据源提升。
+这些旧协议结果不能与新SAT全图片一轮直接当作纯backbone差异；原生新基线会在同三池重测。
+本地全量389项测试通过，Ruff、Bash语法、CLI帮助和diff检查通过；新增17项Web原生配置迁移、
+默认/可选训练编排、baseline-only及缓存、错误身份拒绝、官方loader和CLI参数冲突测试。
+详情、tmux命令和研究问题见[原生适配精简方案](WEB_NATIVE_ADAPTATION_PLAN_2026-10-06.md)。
+
+以下为本轮之前准备的SAT后续方案及历史报告，不再作为必须先运行的安排。
+
+用户同意保留full-maskpos继续实验，并要求探索更强微调和更丰富caption数据。
+新增`tools/run_sat_maskpos_next.py`、`scripts/run_sat_maskpos_next.sh`及四份配置；默认顺序运行：
+adapter+全文本LoRA的batch32/accum2一图片epoch、batch16/accum4三图片epoch、
+head全量+adapter+全文本LoRA的batch32一图片epoch。前两一轮组5269step，三轮组15807step。
+`--include-strong`增加head全量+adapter+文本末4层/ln_final全量+projection全量，不使用文本LoRA。
+head LR1e-5，强配置文本5e-6/projection1e-5，adapter保持1e-4；SAT backbone永久冻结。
+所有实验从官方初始化开始、保持原split/full-image采样/queue0/noaug、每200step及step0/终点验证、三份固定权重。
+复用全图片runner，增加自定义trials/report目录/series支持，旧multipos/maskpos默认协议保持不变；逐配置校验实际池图片预算。
+默认训练后自动27份step0/best/latest三池检索，含强组36份，报告包`outputs/sat_maskpos_next_seed11_reports.tar.gz`不含权重。
+支持预检、只训练、只评测、完成跳过及latest恢复；本地未运行真实GPU或启动服务器实验。
+本地全量372项测试通过，Ruff、Bash语法、CLI帮助与diff检查通过；新增合成3epoch编排/打包/重跑跳过，
+并在小CPU模型上验证head+adapter+LoRA及末4层全量配置的真实更新范围和冻结参数保持。
+批32/head/强配置显存需服务器实测；更大训练范围增大单文件磁盘体积，固定三份不是固定字节占用。
+验证loss约0.85对应16候选小batch，不能视为4055候选全局检索接近上限；现有LoRA已更新全部24文本block及projection。
+按官方资料推荐VRSBench丰富RGB描述、RSTeller规模化丰富RGB子集、ChatEarthNet土地覆盖分支；
+现有SkyScript另一CSV的title_multi_objects也可做共同图像重标注对照。新数据尚未接入本轮。
+启动、比较关系、loss解释与数据引用见[后续计划](SAT_MASKPOS_NEXT_PLAN_2026-10-06.md)。
+
+以下为2026-10-05已完成报告审阅及历史背景。
+
+用户已上传`sat_full_image_epoch_seed11_reports.tar.gz`。两组均完整5269step/21075microbatch、337199图片曝光，图片和36495caption组覆盖100%，无resume/跳过更新/非有限值。
+Full-multipos best=latest5269，unique-val loss0.838027；full-maskpos best5200 loss0.847712，latest5269 loss0.847802。
+以完整覆盖latest为主：full-multipos的原unique/多图按图/多图按组/RSICD MR为10.9412/9.5249/9.4335/6.8739%；
+full-maskpos为11.1467/11.3392/9.8190/7.0658%。两者均较各自1710step版本提高，maskpos的多图收益更明显。
+full-maskpos相对rotate按图MR提高2.4068pp，按组提高0.4930pp，unique仅+0.0493pp，RSICD−0.1219pp；不能宣称全面泛化改善。
+每批平均9.0597不同caption、每查询1.8772正例，采样诊断两组一致；真实单轮覆盖验证了新的图片池协议。
+每组日志训练窗口累计约78分钟，峰值CUDA allocated仍5.68GiB。18检索身份均match，step0与历史一致。
+full-maskpos best5200只覆盖98.70%；latest才完整覆盖，两者指标差异小且方向交叉。
+当前full-maskpos是全图片系列主候选，rotate保留组均衡系列参照；候选选择需继续关注R@1、组均衡指标及RSICD。
+下一步可分开研究跨seed、batch32/accum2、完整2–3图片epoch；本次没有启动或实现后续实验。
+详细审阅见[全图片一轮结果](SAT_FULL_IMAGE_EPOCH_ANALYSIS_2026-10-05.md)。
 
 用户明确将研究拆为两条：rotate继续与原unique-caption作1710step对照；multipos/maskpos另建全图片规模探索，不再要求旧预算匹配。
 用户选择首轮完整训练1个图片epoch，保留现有train/val边界：训练337,199图、验证33,118图，总池370,317图。
@@ -9,7 +60,7 @@
 总曝光精确337,199，不是5269×64；不同caption仍36,495，研究增加的视觉实例/覆盖而非文本种类。
 新增`scripts/run_sat_full_image_epoch.sh`，独立预检、两组顺序训练、step0/best/latest各三池共18评测、无权重报告打包。
 保留每200step验证和0/终点强制验证、三个固定checkpoint；末尾累计窗口3个microbatch按实际数量缩放。
-启动器支持preflight-only/train-only/evaluate-only、已完成跳过和latest恢复。服务器尚未执行这组新实验。
+启动器支持preflight-only/train-only/evaluate-only、已完成跳过和latest恢复。服务器执行与结果现由上述报告确认。
 协议、tmux启动和下载说明见[全图片池一轮实验](SAT_FULL_IMAGE_EPOCH_PLAN_2026-10-05.md)。
 本地全量359项测试通过；另用真实组大小直方图构造337,199行映射，验证完整一轮无丢图/重复、尾批15张。
 
