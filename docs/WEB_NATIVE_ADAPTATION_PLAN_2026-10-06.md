@@ -1,7 +1,10 @@
 # 原生 DINOv3.txt 遥感领域适配：精简首轮
 
 日期：2026-10-06。用户提出优先适配原生DINOv3.txt，避免继续投入长SAT错配修复矩阵。
-本轮准备独立Web入口；尚未在服务器启动评测或训练，保留全部SAT实验与未运行配置。
+本轮已准备独立Web入口，并由用户提供报告确认默认一组训练/三池评测完成；本地没有直接登录服务器执行GPU。
+结果为unique MR17.6860%、多图按图17.0671%/按组15.8317%、RSICD13.9305%；详细审阅见[首轮结果](WEB_NATIVE_SEED11_ANALYSIS_2026-10-06.md)。
+adapter-only和head+LoRA对照尚未运行，保留全部SAT实验与未运行配置。
+用户已同意先只补adapter-only；独立入口`scripts/run_web_adapter_control.sh`复用已完成主组，自动生成比较与报告包，见[同预算对照启动说明](WEB_ADAPTER_CONTROL_PLAN_2026-10-06.md)。
 
 本地验证：全量389项测试通过，Ruff、Bash语法、CLI帮助及diff检查通过；新增原生baseline/缓存身份、默认与可选编排、四身份字段迁移、官方loader及CLI互斥参数测试。
 

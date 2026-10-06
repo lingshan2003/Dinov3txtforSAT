@@ -96,7 +96,7 @@ def _package(
     comparison = root / report_dir
     if comparison.exists():
         paths.update(path for path in comparison.rglob("*")
-                     if path.is_file() and path.suffix in {".json", ".log"})
+                     if path.is_file() and path.suffix in {".json", ".log", ".toml", ".md"})
     archive.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tarfile.open(temporary, "w:gz") as bundle:

@@ -1,6 +1,31 @@
-# 最新交接：优先原生 DINOv3.txt 遥感领域适配，默认仅一组完整图片 epoch
+# 最新交接：原生 Web 首轮已审阅，SkyScript MR17.69%，RSICD有方向性取舍
 
 更新时间：2026-10-06
+
+用户已同意补同预算Web adapter-only；新增`tools/run_web_adapter_control.py`及`scripts/run_web_adapter_control.sh`，尚未启动服务器训练。
+该入口要求adapter+LoRA主组已完整完成，复用其九份检索及三份原生报告，只新增adapter-only一个完整图片epoch。
+仍为337199图/5269step、每200step及step0/终点验证、三固定checkpoint，支持latest恢复/完成跳过。
+自动生成latest/best对比、原生增量与双向Recall，报告包`outputs/web_adapter_control_seed11_reports.tar.gz`含两组日志和比较表，不含权重。
+本地全量398项测试通过，Ruff、Bash语法、CLI帮助及diff检查通过；新增9项控制入口、缓存身份、比较口径和报告打包测试。
+启动与下载见[Web adapter-only对照](WEB_ADAPTER_CONTROL_PLAN_2026-10-06.md)。以下为主组已完成结果。
+
+用户已提供`web_native_seed11_reports.tar.gz`；默认adapter+全层文本LoRA一轮训练及原生/step0/best/latest三池评测已完成。
+训练完整5269step/21075microbatch/337199图曝光、图片与caption组覆盖100%，无resume/跳步/非有限值记录。
+5013760可训练参数、约79分钟训练日志区间求和、RTX3090峰值allocated5.68GiB；best=latest5269。
+固定unique-val loss1.600889→0.590825；summary末更新训练loss0.400583，末9更新日志窗口loss0.380279，口径不同且代码解释明确。
+原生官方与step0三池全部检索指标完全相同，9份checkpoint身份match，best/latest同指标，summary与单独报告一致。
+原生→微调：unique MR8.6313→17.6860%，多图按图6.6031→17.0671%，多图按组均衡7.3741→15.8317%，RSICD14.4759→13.9305%。
+同源两个池全部六项Recall提高，unique图→文/文→图R@1为5.4007%/5.8693%，median rank180→30、119→32。
+RSICD图→文R@1下降、R@5/10提高，文→图三项下降；MR−0.5454pp不能称为全指标基本持平或全面泛化提升。
+与已完成SAT full-maskpos1epoch的配置仅name/output/domain/backbone_weights四项不同；数据/监督/预算、三检索池和527窗口采样诊断匹配。
+Web相对SAT终点unique/多图按图/多图按组/RSICD MR分别+6.5393/+5.7279/+6.0127/+6.8647pp，val loss低30.31%。
+支持原生配套模型在本预算下更高绝对对齐表现，不能解释为SAT纯视觉表征较差。
+当前只有一个新训练、一个seed；adapter-only及head+LoRA控制尚未运行。下一步优先同协议Web adapter-only，再补主候选seed23/47。
+当前RSICD官方重测14.4759%，不同于旧M4引用15.8775%；已有确定性tie修复，不能混用历史基线计算新退化或把差异全归因tie。
+用户包无权重/图片/逐查询rank；审阅未重跑GPU或重算SHA256，读取已有来源记录确认一致性。
+详细表格与边界见[原生首轮审阅](WEB_NATIVE_SEED11_ANALYSIS_2026-10-06.md)，机器汇总在忽略目录`outputs/web_native_seed11_review.json`。
+
+以下为2026-10-06启动前的方向与脚本准备记录，执行状态以上述用户新报告为准。
 
 用户认为SAT与通用head/text错配修复的投入产出偏低，提出将现有方法迁移到原生DINOv3.txt作为更直接的领域后训练方向。
 按此新方向优先准备Web原生组合；旧“SAT唯一主角、Web统一后置”安排不再限制本轮工作，历史SAT配置与报告完整保留。

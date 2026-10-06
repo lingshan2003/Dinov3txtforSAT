@@ -123,19 +123,17 @@ def _official_baseline(root: Path, python: str, config: Config) -> None:
     })
 
 
-def run_pipeline(
-    root: Path, python: str, *, mode: str = "all", include_controls: bool = False,
-) -> Path | None:
-    if mode not in {"all", "baseline-only", "preflight-only", "train-only", "evaluate-only"}:
-        raise ValueError(f"Unknown pipeline mode: {mode}")
+def validated_trials(root: Path, methods: tuple[str, ...]) -> list[Trial]:
+    """Validate selected Web variants without starting work or writing output."""
+    if not methods or len(set(methods)) != len(methods) or set(methods) - set(VARIANTS):
+        raise ValueError(f"Invalid native Web variant selection: {methods}")
     root = root.resolve()
     reference = load_config(
         root / "configs/skyscript_sat_adapter_textlora_maskpos_fullimage1epoch_seed11.toml"
     )
     trials = []
-    for method, name in VARIANTS.items():
-        if method != "adapter_lora" and not include_controls:
-            continue
+    for method in methods:
+        name = VARIANTS[method]
         trial = Trial(method, root / "configs" / f"{name}.toml", root / "outputs" / name)
         config = load_config(trial.config)
         head = method == "head_lora"
@@ -161,6 +159,17 @@ def run_pipeline(
         ):
             raise ValueError(f"Unexpected native Web adaptation protocol: {trial.config}")
         trials.append(trial)
+    return trials
+
+
+def run_pipeline(
+    root: Path, python: str, *, mode: str = "all", include_controls: bool = False,
+) -> Path | None:
+    if mode not in {"all", "baseline-only", "preflight-only", "train-only", "evaluate-only"}:
+        raise ValueError(f"Unknown pipeline mode: {mode}")
+    root = root.resolve()
+    methods = tuple(VARIANTS) if include_controls else ("adapter_lora",)
+    trials = validated_trials(root, methods)
     options = {
         "trials": trials, "report_dir": REPORT_DIR, "series": SERIES,
         "require_matching_recipes": False,
