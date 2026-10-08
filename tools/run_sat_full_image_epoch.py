@@ -115,6 +115,7 @@ def run_pipeline(
     root: Path, python: str, *, mode: str = "all", trials: list[Trial] | None = None,
     report_dir: Path = REPORT_DIR, series: str = "sat_full_image_epoch_seed11",
     require_matching_recipes: bool = True,
+    expected_seed: int = 11,
 ) -> Path | None:
     if mode not in {"all", "train-only", "evaluate-only", "preflight-only"}:
         raise ValueError(f"Unknown pipeline mode: {mode}")
@@ -132,7 +133,7 @@ def run_pipeline(
         config = load_config(trial.config)
         configs[trial.method] = config
         if (
-            config.experiment.seed != 11
+            config.experiment.seed != expected_seed
             or (root / config.experiment.output_dir).resolve() != trial.output
             or config.data.caption_sampling != "image_epoch"
             or (require_matching_recipes and config.train.image_epochs != 1)

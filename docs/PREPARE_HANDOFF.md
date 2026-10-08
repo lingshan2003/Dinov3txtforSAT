@@ -1,6 +1,28 @@
-# 最新交接：原生 Web 首轮已审阅，SkyScript MR17.69%，RSICD有方向性取舍
+# 最新交接：Web adapter-only对照已审阅，联合LoRA同源与RSICD MR均更优
 
-更新时间：2026-10-06
+更新时间：2026-10-08
+
+用户已同意两种方法补seed23/47，新增`tools/run_web_paired_seeds.py`、`scripts/run_web_paired_seeds.sh`及四份对应配置，尚未启动服务器GPU。
+默认先只读预检六组，再复用seed11完整训练及18检索，只新增四组训练；保留全部固定协议、三权重、latest恢复/完成跳过。
+共有full-image runner增加`expected_seed`可选参数（默认11），新入口按seed校验，其余历史入口仍固定原seed行为。
+默认每组完成三池step0/best/latest，共36份新增检索；最终包为原生3份+六组54份及日志。
+自动汇总三seed均值/sample std（ddof=1）、每seed配对LoRA减adapter-only的均值/std，以及best/latest与原生增量；不自动作显著性结论。
+全部完成下载`outputs/web_paired_seeds_reports.tar.gz`，完整tmux启动、空间和恢复说明见[三seed配对方案](WEB_PAIRED_SEEDS_PLAN_2026-10-08.md)。
+本地411项全量测试通过，Ruff/Bash语法/CLI帮助/diff检查通过；新增13项seed门禁、编排、缓存、统计与恢复/跳过测试。
+
+用户已提供`web_adapter_control_seed11_reports.tar.gz`，完整adapter-only训练与三池评测已完成。
+两组均5269step/21075microbatch/337199图完整一轮、36495组全覆盖，无resume/跳过更新/非有限值；28次验证且best=latest5269。
+只改变name/output与text_lora_rank/include_projection四配置字段，527窗口采样诊断一致，核心src训练/评测代码无commit间差异。
+18checkpoint身份match无警告；两组step0全部指标同原生，best/latest相同；旧主组7训练文件+9检索+3官方报告共19文件逐字节相同。
+adapter-only unique/多图按图/多图按组/RSICD MR为14.5006/13.5257/12.9117/12.2578%。
+联合LoRA为17.6860/17.0671/15.8317/13.9305%，分别高3.1854/3.5414/2.9201/1.6728pp。
+原生RSICD14.4759%；adapter-only下降2.2182pp，联合下降0.5454pp。本轮不支持文本LoRA加重迁移代价的猜测。
+RSICD联合相对控制六项Recall五升一平，图→文R@1相同、文→图R@1仅+0.0366pp，主要改善R@5/10；R@1仍低于原生。
+控制组仅1054976个adapter参数、终点val loss0.688097，训练日志区间57.12分钟/allocated3.91GiB；联合0.590825、78.99分钟/5.68GiB。
+继续以联合为主候选，优先两组补seed23/47做配对复现，再考虑无adapter文本LoRA-only或head+LoRA；尚无独立test/显著性或模块机制证据。
+本次仅审阅与文档更新，未重算SHA256或启动服务器训练。详情见[控制组审阅](WEB_ADAPTER_CONTROL_SEED11_ANALYSIS_2026-10-08.md)，机器汇总在`outputs/web_adapter_control_seed11_review.json`。
+
+以下为2026-10-06准备记录和上轮主组审阅，当前执行状态以上述新报告为准。
 
 用户已同意补同预算Web adapter-only；新增`tools/run_web_adapter_control.py`及`scripts/run_web_adapter_control.sh`，尚未启动服务器训练。
 该入口要求adapter+LoRA主组已完整完成，复用其九份检索及三份原生报告，只新增adapter-only一个完整图片epoch。

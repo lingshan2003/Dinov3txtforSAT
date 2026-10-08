@@ -1,5 +1,7 @@
 # 原生 DINOv3.txt 遥感领域适配：精简首轮
 
+2026-10-08更新：adapter-only同预算对照已完成，联合LoRA在同源及RSICD MR均更高；head+LoRA尚未运行。见[对照审阅](WEB_ADAPTER_CONTROL_SEED11_ANALYSIS_2026-10-08.md)，下文保留首轮计划记录。
+
 日期：2026-10-06。用户提出优先适配原生DINOv3.txt，避免继续投入长SAT错配修复矩阵。
 本轮已准备独立Web入口，并由用户提供报告确认默认一组训练/三池评测完成；本地没有直接登录服务器执行GPU。
 结果为unique MR17.6860%、多图按图17.0671%/按组15.8317%、RSICD13.9305%；详细审阅见[首轮结果](WEB_NATIVE_SEED11_ANALYSIS_2026-10-06.md)。

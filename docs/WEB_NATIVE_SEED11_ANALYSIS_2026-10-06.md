@@ -89,7 +89,7 @@ RSICD图→文R@5/10提高，但R@1下降0.9141pp；文→图三项分别下降1
 仍不能支持：LoRA优于adapter-only、maskpos优于其他目标、全部参数范围的最优组合、跨seed稳定、独立最终test改善、通用自然图像能力保持。
 
 下一步优先补同数据/预算的Web adapter-only，判断LoRA是否带来额外收益、是否加重RSICD退化。
-用户已同意，代码与独立启动器已准备；尚未执行服务器训练，见[adapter-only对照方案与tmux命令](WEB_ADAPTER_CONTROL_PLAN_2026-10-06.md)。
+2026-10-08更新：用户已提供adapter-only完成报告，联合LoRA在同源和RSICD MR均高于adapter-only，见[对照审阅](WEB_ADAPTER_CONTROL_SEED11_ANALYSIS_2026-10-08.md)。本节其余结论为仅有主组时的边界与计划。
 随后对主候选补seed23/47，报告均值、离散度及各方向R@1；不优先扩大3epoch/head全量/强文本参数矩阵。
 head+LoRA无adapter可作为原架构更新的后续对照；更丰富caption是独立轴，待当前候选/消融关系明确后再推进。
 若RSICD保持是核心目标，再单独比较较低文本LoRA LR、只更新部分层/不更新projection或保持约束；本轮不能把迁移代价定位到某个模块。

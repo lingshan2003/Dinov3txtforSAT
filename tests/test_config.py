@@ -213,6 +213,10 @@ def test_historical_configs_keep_numbered_checkpoint_policy() -> None:
     rolling_configs = {
         "skyscript_web_adapter_textlora_maskpos_fullimage1epoch_seed11.toml",
         "skyscript_web_adapteronly_maskpos_fullimage1epoch_seed11.toml",
+        "skyscript_web_adapter_textlora_maskpos_fullimage1epoch_seed23.toml",
+        "skyscript_web_adapter_textlora_maskpos_fullimage1epoch_seed47.toml",
+        "skyscript_web_adapteronly_maskpos_fullimage1epoch_seed23.toml",
+        "skyscript_web_adapteronly_maskpos_fullimage1epoch_seed47.toml",
         "skyscript_web_head_textlora_maskpos_fullimage1epoch_seed11.toml",
         "skyscript_sat_adapter_textlora_maskpos_batch32_fullimage1epoch_seed11.toml",
         "skyscript_sat_adapter_textlora_maskpos_fullimage3epoch_seed11.toml",
