@@ -211,6 +211,7 @@ def test_load_new_three_epoch_skyscript_configs() -> None:
 
 def test_historical_configs_keep_numbered_checkpoint_policy() -> None:
     rolling_configs = {
+        "skyscript_web_mixed_pilot_16k_1to1_3epoch_seed11.toml",
         "skyscript_web_adapter_textlora_maskpos_fullimage1epoch_seed11.toml",
         "skyscript_web_adapteronly_maskpos_fullimage1epoch_seed11.toml",
         "skyscript_web_adapter_textlora_maskpos_fullimage1epoch_seed23.toml",

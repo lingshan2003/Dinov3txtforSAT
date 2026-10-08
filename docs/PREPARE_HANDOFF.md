@@ -1,6 +1,30 @@
-# 最新交接：Web adapter-only对照已审阅，联合LoRA同源与RSICD MR均更优
+# 最新交接：短/详细caption 1:1小规模试验已打包，待上传训练
 
 更新时间：2026-10-08
+
+用户已授权先构建较小的1:1短/详细caption混合数据，上传服务器完整训练3轮，并评价自身验证与RSICD-val。本地已生成`outputs/skyscript_mixed_pilot_16k_1to1_v1.zip`（261,656,598字节，约261.7 MB），训练16,000张（8k＋8k）、验证1,600张（800＋800）；每图固定一种caption，每原短组/OSM对象一图，沿用40,550组历史seed23拆分。17,600张图片CRC与完整解码通过；无所选caption精确重复或split交叉。详细原文来自另一Top30 CSV的`title_multi_objects`字段。
+
+新增producer、server installer、Web pilot runner/bash和固定配置。服务器安装用原两份unique manifest核对split，用真实BPE对77-token作完整词回退，截断碰撞即停止；复用原图片，只补缺图。默认从官方初始化，adapter256＋全部文本/projection LoRA8，冻结视觉backbone/head；image_epoch三轮48,000曝光、750optimizer steps、warmup75，200step及step0/终点验证，step0/best/latest三文件。无需改src训练或loss。
+
+默认先原生4池检索，再训练，再step0/best/latest各4池：同1,600验证图的mixed/short/detail三个文本版本＋原RSICD-val，共16报告。best按mixed-val loss保存，主要比较完整3轮latest相对同池原生；不根据RSICD选best。支持预检、续跑、完成跳过、只训练/只评价，最终报告包`outputs/web_mixed_pilot_seed11_reports.tar.gz`。本地未执行服务器真实tokenizer/GPU；上传与tmux命令见[16k混合试验操作说明](MIXED_CAPTION_PILOT_16K_2026-10-08.md)。本轮没有自动训练S-only控制，不能把新小池MR直接与旧池MR相减证明混合净收益。
+
+更广的数据扩展与多caption正例思路见[混合caption训练方案](MIXED_CAPTION_TRAINING_PLAN_2026-10-08.md)。以下为已完成三seed复现及历史记录。
+
+用户已提供`web_paired_seeds_reports.tar.gz`，seed11/23/47两方法六组训练与57检索报告完成。
+六组完整5269step/21075microbatch/337199图、无resume/跳步/非有限值，28次val；同seed共1581窗口诊断一致；54身份match无警告，18step0指标/计数同官方。
+主要以完整覆盖latest比较；三seed四项MR配对增益均正，unique3.1278±0.1368pp、多图按图3.4101±0.1509pp、按组2.8909±0.2147pp、RSICD1.9196±0.3300pp。
+adapter-only三seedMR为unique14.6486±0.1305%、按图13.5031±0.0199%、按组12.8729±0.0665%、RSICD12.2171±0.0895%。
+联合为17.7764±0.1711%、16.9132±0.1641%、15.7638±0.1666%、14.1367±0.2459%；±均sample std、ddof1，不是CI。
+原生unique8.6313%、多图按图6.6031%、按组7.3741%、RSICD14.4759%；联合RSICD平均−0.3392pp，控制−2.2588pp，三seed均未超过原生。
+同域双向R@1/5/10共36/36项配对提高；RSICD16升2平，但相对原生三个seed都是图→文R5/10升、其余4项降。
+best步骤为seed11两组5269、seed23两组5000、seed47联合5200/控制5269；改用best结论方向不变。
+核心src训练评测实现commit间无变化；旧seed11两组训练/检索及官方共35文件字节相同；全部聚合均值/std/配对/原生增量重算一致。
+联合/控制val loss三seed0.585157±0.006277 /0.683319±0.005909，日志区间均值78.54/57.21分钟、allocated5.68/3.91GiB。
+支持作为第一阶段稳定经验结论，限定固定验证池/三训练seed；无独立test或显著性推断，不能拆分Transformer/projection/adapter轨迹贡献。
+正在撰写第一份阶段报告，可把配对复现由ongoing改completed；Word模板先前仅阅读、未修改。报告主线为冻结骨干的参数高效遥感图文适配。
+结果表、结论中英文表述见[三seed审阅](WEB_PAIRED_SEEDS_ANALYSIS_2026-10-08.md)，机器汇总在`outputs/web_paired_seeds_review.json`。
+
+以下为本轮启动准备及seed11结果记录，当前状态以上述三seed报告为准。
 
 用户已同意两种方法补seed23/47，新增`tools/run_web_paired_seeds.py`、`scripts/run_web_paired_seeds.sh`及四份对应配置，尚未启动服务器GPU。
 默认先只读预检六组，再复用seed11完整训练及18检索，只新增四组训练；保留全部固定协议、三权重、latest恢复/完成跳过。

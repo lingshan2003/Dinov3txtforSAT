@@ -1,5 +1,7 @@
 # Web 两种适配方法三seed配对复现
 
+2026-10-08完成更新：用户已提供六组完整训练/评测报告。联合方案在三个配对seed的同域与RSICD mean Recall均优于adapter-only；unique平均17.7764±0.1711%、配对收益3.1278±0.1368pp，详见[三seed结果审阅](WEB_PAIRED_SEEDS_ANALYSIS_2026-10-08.md)。以下保留启动前协议。
+
 日期：2026-10-08。用户同意复现adapter-only与adapter＋文本LoRA；代码已准备，本地未启动服务器GPU。
 
 本地验证：411项全量测试通过，Ruff、Bash语法、CLI帮助及diff检查通过。新增13项测试覆盖配方/seed校验、全组预检、缓存拒绝、配对统计和seed23真实共享编排的首次训练/恢复/跳过；原配置测试的rolling清单同步新增四份配方。

@@ -2,7 +2,9 @@
 
 研究如何以有限算力，让视觉基础模型更好地理解遥感领域文本，并在领域适配过程中保持已有能力。
 
-当前主线是 **SkyScript `title_raw` + 冻结官方 dino.txt + 小型图像 embedding adapter**。ChatEarthNet 已转为历史诊断数据。具体进度、实验结果和下一步统一维护在交接文档中。
+当前主线是 **SkyScript 全图片训练 + 原生 Web DINOv3.txt + 冻结视觉 backbone/head + 图像 embedding adapter 与全文本及 projection LoRA 联合适配**。与 adapter-only 的 seed11/23/47 配对复现已完成，联合方案在同域检索与 RSICD mean Recall 上均优于 adapter-only，但 RSICD 仍未超过原生。结果见[三seed审阅](docs/WEB_PAIRED_SEEDS_ANALYSIS_2026-10-08.md)。ChatEarthNet 已转为历史诊断数据；具体进度统一维护在交接文档中。
+
+下一轮采用同一适配方法，先做 **16,000张训练图、1,600张验证图、短/详细caption 1:1、完整3轮** 的小规模混合试验。数据包上传、服务器安装及tmux启动见[混合试验操作说明](docs/MIXED_CAPTION_PILOT_16K_2026-10-08.md)。
 
 ## 文档入口
 

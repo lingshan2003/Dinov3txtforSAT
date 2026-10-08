@@ -1,5 +1,7 @@
 # Web adapter-only 同预算对照审阅
 
+后续状态：seed23/47配对复现已完成，同源与RSICD MR的联合优势均重复，完整三seed结论见[配对复现审阅](WEB_PAIRED_SEEDS_ANALYSIS_2026-10-08.md)。以下仍为seed11单组分析。
+
 审阅日期：2026-10-08。来源：用户提供的`/Users/wangyue/Downloads/web_adapter_control_seed11_reports.tar.gz`。
 本地读取42个文件，核对配置、训练/验证日志、来源记录、21份检索报告及比较汇总；未登录服务器、重跑GPU或重新计算SHA256。
 机器汇总保存在忽略目录`outputs/web_adapter_control_seed11_review.json`。
